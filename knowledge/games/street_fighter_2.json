@@ -1,0 +1,1752 @@
+{
+  "_meta": {
+    "game": "Street Fighter 2: The World Warrior",
+    "genre": "2d_fighter",
+    "source": "community frame data + original arcade documentation",
+    "notes": [
+      "Frame data at 60fps",
+      "Damage values on a 1000 HP scale",
+      "Hitstun and blockstun in frames",
+      "All move properties assume standing opponent unless noted"
+    ]
+  },
+  "global": {
+    "screen_w": 800,
+    "screen_h": 450,
+    "floor_y": 380,
+    "gravity": 0.8,
+    "jump_velocity": -16,
+    "fps": 60,
+    "round_time_seconds": 99,
+    "rounds_to_win_match": 2,
+    "max_rounds": 3,
+    "input_buffer_size": 20,
+    "input_buffer_max_age_ms": 500,
+    "charge_duration_ms": 1000,
+    "mash_window_ms": 500,
+    "projectile_clash": "both_destroyed",
+    "hitstop_frames": {
+      "light": 5,
+      "medium": 8,
+      "heavy": 12,
+      "special": 10,
+      "projectile": 6
+    },
+    "dizzy_duration_frames": 300,
+    "stun_decay_per_idle_frame": 1,
+    "block_damage_multiplier": 0.25,
+    "block_pushback_px": 20,
+    "diagonal_inputs": {
+      "down_fwd": [
+        "s",
+        "d"
+      ],
+      "down_back": [
+        "s",
+        "a"
+      ],
+      "up_fwd": [
+        "w",
+        "d"
+      ],
+      "up_back": [
+        "w",
+        "a"
+      ]
+    },
+    "notes": [
+      "Diagonal inputs detected by checking simultaneous key states each frame",
+      "Facing direction determines which key is 'back' vs 'forward' — must resolve per-frame",
+      "Blocking: hold back direction when attack incoming — checked after special move detection",
+      "Hitstop: both fighters freeze on hit/block for hitstop_frames — no inputs during freeze",
+      "Stun meter resets at round start and decays by stun_decay_per_idle_frame when idle"
+    ]
+  },
+  "characters": {
+    "ryu": {
+      "full_name": "Ryu",
+      "archetype": "zoner",
+      "health": 1000,
+      "walk_speed": 3.5,
+      "back_walk_speed": 2.8,
+      "jump_velocity_x": 4.0,
+      "jump_height": 190,
+      "stand_hitbox": {
+        "x_offset": 0,
+        "y_offset": 0,
+        "w": 40,
+        "h": 80
+      },
+      "crouch_hitbox": {
+        "x_offset": 0,
+        "y_offset": 22,
+        "w": 44,
+        "h": 58
+      },
+      "throw_range": 48,
+      "throw_damage": 120,
+      "special_moves": [
+        "hadouken",
+        "shoryuken",
+        "tatsumaki"
+      ],
+      "normals": {
+        "light_punch": {
+          "startup": 4,
+          "active": 2,
+          "recovery": 8,
+          "damage": 30,
+          "hitstun": 13,
+          "blockstun": 5,
+          "cancel_window": 6,
+          "notes": "fast jab, cancel-able into specials"
+        },
+        "medium_punch": {
+          "startup": 6,
+          "active": 3,
+          "recovery": 12,
+          "damage": 60,
+          "hitstun": 17,
+          "blockstun": 8,
+          "cancel_window": 5,
+          "notes": "mid-range poke"
+        },
+        "heavy_punch": {
+          "startup": 9,
+          "active": 4,
+          "recovery": 18,
+          "damage": 100,
+          "hitstun": 22,
+          "blockstun": 12,
+          "cancel_window": 4,
+          "notes": "high damage, slow"
+        },
+        "light_kick": {
+          "startup": 5,
+          "active": 2,
+          "recovery": 9,
+          "damage": 28,
+          "hitstun": 12,
+          "blockstun": 4,
+          "cancel_window": 5,
+          "notes": "low hit, crouching"
+        },
+        "medium_kick": {
+          "startup": 7,
+          "active": 3,
+          "recovery": 14,
+          "damage": 55,
+          "hitstun": 16,
+          "blockstun": 7,
+          "cancel_window": 4,
+          "notes": "forward kick"
+        },
+        "heavy_kick": {
+          "startup": 11,
+          "active": 5,
+          "recovery": 22,
+          "damage": 95,
+          "hitstun": 22,
+          "blockstun": 11,
+          "cancel_window": 3,
+          "notes": "long-range roundhouse"
+        }
+      }
+    },
+    "ken": {
+      "full_name": "Ken Masters",
+      "archetype": "rushdown",
+      "health": 1000,
+      "walk_speed": 4.2,
+      "back_walk_speed": 3.2,
+      "jump_velocity_x": 4.5,
+      "jump_height": 210,
+      "stand_hitbox": {
+        "x_offset": 0,
+        "y_offset": 0,
+        "w": 38,
+        "h": 78
+      },
+      "crouch_hitbox": {
+        "x_offset": 0,
+        "y_offset": 22,
+        "w": 42,
+        "h": 56
+      },
+      "throw_range": 52,
+      "throw_damage": 110,
+      "special_moves": [
+        "ken_hadouken",
+        "ken_shoryuken",
+        "ken_tatsumaki"
+      ],
+      "normals": {
+        "light_punch": {
+          "startup": 3,
+          "active": 2,
+          "recovery": 7,
+          "damage": 28,
+          "hitstun": 13,
+          "blockstun": 5,
+          "cancel_window": 6,
+          "notes": "fastest jab in the game"
+        },
+        "medium_punch": {
+          "startup": 5,
+          "active": 3,
+          "recovery": 11,
+          "damage": 55,
+          "hitstun": 17,
+          "blockstun": 8,
+          "cancel_window": 5
+        },
+        "heavy_punch": {
+          "startup": 8,
+          "active": 4,
+          "recovery": 16,
+          "damage": 90,
+          "hitstun": 21,
+          "blockstun": 11,
+          "cancel_window": 4
+        },
+        "light_kick": {
+          "startup": 4,
+          "active": 2,
+          "recovery": 8,
+          "damage": 26,
+          "hitstun": 12,
+          "blockstun": 4,
+          "cancel_window": 5
+        },
+        "medium_kick": {
+          "startup": 6,
+          "active": 3,
+          "recovery": 12,
+          "damage": 50,
+          "hitstun": 16,
+          "blockstun": 7,
+          "cancel_window": 4
+        },
+        "heavy_kick": {
+          "startup": 10,
+          "active": 5,
+          "recovery": 19,
+          "damage": 88,
+          "hitstun": 21,
+          "blockstun": 10,
+          "cancel_window": 3
+        }
+      }
+    },
+    "chun_li": {
+      "full_name": "Chun-Li",
+      "archetype": "charge",
+      "health": 950,
+      "walk_speed": 4.8,
+      "back_walk_speed": 3.8,
+      "jump_velocity_x": 5.0,
+      "jump_height": 220,
+      "stand_hitbox": {
+        "x_offset": 0,
+        "y_offset": 0,
+        "w": 36,
+        "h": 76
+      },
+      "crouch_hitbox": {
+        "x_offset": 0,
+        "y_offset": 22,
+        "w": 40,
+        "h": 54
+      },
+      "throw_range": 44,
+      "throw_damage": 100,
+      "special_moves": [
+        "kikoken",
+        "spinning_bird_kick",
+        "hyakuretsu_kyaku"
+      ],
+      "normals": {
+        "light_punch": {
+          "startup": 4,
+          "active": 2,
+          "recovery": 6,
+          "damage": 22,
+          "hitstun": 12,
+          "blockstun": 4,
+          "cancel_window": 6
+        },
+        "medium_punch": {
+          "startup": 6,
+          "active": 3,
+          "recovery": 10,
+          "damage": 45,
+          "hitstun": 16,
+          "blockstun": 7,
+          "cancel_window": 5
+        },
+        "heavy_punch": {
+          "startup": 8,
+          "active": 4,
+          "recovery": 16,
+          "damage": 80,
+          "hitstun": 20,
+          "blockstun": 10,
+          "cancel_window": 4
+        },
+        "light_kick": {
+          "startup": 4,
+          "active": 2,
+          "recovery": 6,
+          "damage": 25,
+          "hitstun": 11,
+          "blockstun": 4,
+          "cancel_window": 6,
+          "notes": "fast low kick, Chun-Li's main poke"
+        },
+        "medium_kick": {
+          "startup": 6,
+          "active": 4,
+          "recovery": 10,
+          "damage": 50,
+          "hitstun": 16,
+          "blockstun": 7,
+          "cancel_window": 4
+        },
+        "heavy_kick": {
+          "startup": 11,
+          "active": 5,
+          "recovery": 20,
+          "damage": 90,
+          "hitstun": 21,
+          "blockstun": 11,
+          "cancel_window": 3
+        }
+      }
+    },
+    "guile": {
+      "full_name": "Guile",
+      "archetype": "charge",
+      "health": 1050,
+      "walk_speed": 2.8,
+      "back_walk_speed": 2.2,
+      "jump_velocity_x": 3.5,
+      "jump_height": 165,
+      "stand_hitbox": {
+        "x_offset": 0,
+        "y_offset": 0,
+        "w": 42,
+        "h": 82
+      },
+      "crouch_hitbox": {
+        "x_offset": 0,
+        "y_offset": 20,
+        "w": 46,
+        "h": 60
+      },
+      "throw_range": 50,
+      "throw_damage": 130,
+      "special_moves": [
+        "sonic_boom",
+        "flash_kick"
+      ],
+      "normals": {
+        "light_punch": {
+          "startup": 5,
+          "active": 3,
+          "recovery": 8,
+          "damage": 35,
+          "hitstun": 13,
+          "blockstun": 5,
+          "cancel_window": 5
+        },
+        "medium_punch": {
+          "startup": 7,
+          "active": 4,
+          "recovery": 13,
+          "damage": 65,
+          "hitstun": 18,
+          "blockstun": 9,
+          "cancel_window": 4
+        },
+        "heavy_punch": {
+          "startup": 10,
+          "active": 5,
+          "recovery": 20,
+          "damage": 110,
+          "hitstun": 23,
+          "blockstun": 13,
+          "cancel_window": 3,
+          "notes": "long horizontal hitbox"
+        },
+        "light_kick": {
+          "startup": 5,
+          "active": 3,
+          "recovery": 9,
+          "damage": 30,
+          "hitstun": 12,
+          "blockstun": 4,
+          "cancel_window": 5
+        },
+        "medium_kick": {
+          "startup": 8,
+          "active": 4,
+          "recovery": 14,
+          "damage": 60,
+          "hitstun": 17,
+          "blockstun": 8,
+          "cancel_window": 4
+        },
+        "heavy_kick": {
+          "startup": 12,
+          "active": 5,
+          "recovery": 22,
+          "damage": 100,
+          "hitstun": 23,
+          "blockstun": 12,
+          "cancel_window": 3,
+          "notes": "back_kick, good range"
+        }
+      }
+    },
+    "blanka": {
+      "full_name": "Blanka",
+      "archetype": "rushdown",
+      "health": 1000,
+      "walk_speed": 3.2,
+      "back_walk_speed": 2.6,
+      "jump_velocity_x": 5.5,
+      "jump_height": 200,
+      "stand_hitbox": {
+        "x_offset": 0,
+        "y_offset": 0,
+        "w": 44,
+        "h": 72
+      },
+      "crouch_hitbox": {
+        "x_offset": 0,
+        "y_offset": 18,
+        "w": 50,
+        "h": 52
+      },
+      "throw_range": 46,
+      "throw_damage": 110,
+      "special_moves": [
+        "rolling_attack",
+        "electric_thunder",
+        "vertical_rolling"
+      ],
+      "normals": {
+        "light_punch": {
+          "startup": 4,
+          "active": 2,
+          "recovery": 7,
+          "damage": 28,
+          "hitstun": 12,
+          "blockstun": 4,
+          "cancel_window": 6
+        },
+        "medium_punch": {
+          "startup": 6,
+          "active": 3,
+          "recovery": 11,
+          "damage": 52,
+          "hitstun": 16,
+          "blockstun": 8,
+          "cancel_window": 5
+        },
+        "heavy_punch": {
+          "startup": 9,
+          "active": 4,
+          "recovery": 17,
+          "damage": 95,
+          "hitstun": 21,
+          "blockstun": 11,
+          "cancel_window": 4
+        },
+        "light_kick": {
+          "startup": 5,
+          "active": 2,
+          "recovery": 8,
+          "damage": 26,
+          "hitstun": 11,
+          "blockstun": 4,
+          "cancel_window": 5
+        },
+        "medium_kick": {
+          "startup": 7,
+          "active": 3,
+          "recovery": 13,
+          "damage": 50,
+          "hitstun": 15,
+          "blockstun": 7,
+          "cancel_window": 4
+        },
+        "heavy_kick": {
+          "startup": 11,
+          "active": 5,
+          "recovery": 20,
+          "damage": 90,
+          "hitstun": 21,
+          "blockstun": 11,
+          "cancel_window": 3
+        }
+      }
+    },
+    "zangief": {
+      "full_name": "Zangief",
+      "archetype": "grappler",
+      "health": 1150,
+      "walk_speed": 2.4,
+      "back_walk_speed": 1.8,
+      "jump_velocity_x": 2.5,
+      "jump_height": 150,
+      "stand_hitbox": {
+        "x_offset": 0,
+        "y_offset": 0,
+        "w": 50,
+        "h": 90
+      },
+      "crouch_hitbox": {
+        "x_offset": 0,
+        "y_offset": 25,
+        "w": 56,
+        "h": 64
+      },
+      "throw_range": 60,
+      "throw_damage": 180,
+      "special_moves": [
+        "spinning_piledriver",
+        "double_lariat"
+      ],
+      "normals": {
+        "light_punch": {
+          "startup": 6,
+          "active": 3,
+          "recovery": 10,
+          "damage": 40,
+          "hitstun": 14,
+          "blockstun": 6,
+          "cancel_window": 4
+        },
+        "medium_punch": {
+          "startup": 8,
+          "active": 4,
+          "recovery": 15,
+          "damage": 75,
+          "hitstun": 19,
+          "blockstun": 10,
+          "cancel_window": 3
+        },
+        "heavy_punch": {
+          "startup": 11,
+          "active": 5,
+          "recovery": 22,
+          "damage": 120,
+          "hitstun": 24,
+          "blockstun": 13,
+          "cancel_window": 2
+        },
+        "light_kick": {
+          "startup": 6,
+          "active": 3,
+          "recovery": 10,
+          "damage": 36,
+          "hitstun": 13,
+          "blockstun": 5,
+          "cancel_window": 4
+        },
+        "medium_kick": {
+          "startup": 9,
+          "active": 4,
+          "recovery": 16,
+          "damage": 68,
+          "hitstun": 18,
+          "blockstun": 9,
+          "cancel_window": 3
+        },
+        "heavy_kick": {
+          "startup": 13,
+          "active": 6,
+          "recovery": 24,
+          "damage": 108,
+          "hitstun": 23,
+          "blockstun": 12,
+          "cancel_window": 2
+        }
+      }
+    },
+    "dhalsim": {
+      "full_name": "Dhalsim",
+      "archetype": "zoner",
+      "health": 900,
+      "walk_speed": 2.0,
+      "back_walk_speed": 1.6,
+      "jump_velocity_x": 3.0,
+      "jump_height": 230,
+      "stand_hitbox": {
+        "x_offset": 0,
+        "y_offset": 0,
+        "w": 34,
+        "h": 80
+      },
+      "crouch_hitbox": {
+        "x_offset": 0,
+        "y_offset": 22,
+        "w": 38,
+        "h": 56
+      },
+      "throw_range": 40,
+      "throw_damage": 100,
+      "special_moves": [
+        "yoga_fire",
+        "yoga_flame",
+        "yoga_teleport"
+      ],
+      "normals": {
+        "light_punch": {
+          "startup": 5,
+          "active": 10,
+          "recovery": 8,
+          "damage": 18,
+          "hitstun": 11,
+          "blockstun": 4,
+          "cancel_window": 5,
+          "notes": "stretching arm, extended reach"
+        },
+        "medium_punch": {
+          "startup": 7,
+          "active": 12,
+          "recovery": 14,
+          "damage": 40,
+          "hitstun": 15,
+          "blockstun": 7,
+          "cancel_window": 4,
+          "notes": "longer reach stretch"
+        },
+        "heavy_punch": {
+          "startup": 10,
+          "active": 14,
+          "recovery": 20,
+          "damage": 80,
+          "hitstun": 20,
+          "blockstun": 10,
+          "cancel_window": 3,
+          "notes": "max reach drill punch"
+        },
+        "light_kick": {
+          "startup": 5,
+          "active": 10,
+          "recovery": 8,
+          "damage": 20,
+          "hitstun": 11,
+          "blockstun": 4,
+          "cancel_window": 5,
+          "notes": "stretching leg"
+        },
+        "medium_kick": {
+          "startup": 8,
+          "active": 12,
+          "recovery": 14,
+          "damage": 44,
+          "hitstun": 15,
+          "blockstun": 7,
+          "cancel_window": 4
+        },
+        "heavy_kick": {
+          "startup": 12,
+          "active": 14,
+          "recovery": 22,
+          "damage": 88,
+          "hitstun": 21,
+          "blockstun": 11,
+          "cancel_window": 2,
+          "notes": "slide kick, low profile"
+        }
+      }
+    },
+    "e_honda": {
+      "full_name": "E. Honda",
+      "archetype": "charge",
+      "health": 1050,
+      "walk_speed": 2.6,
+      "back_walk_speed": 2.0,
+      "jump_velocity_x": 3.0,
+      "jump_height": 155,
+      "stand_hitbox": {
+        "x_offset": 0,
+        "y_offset": 0,
+        "w": 52,
+        "h": 84
+      },
+      "crouch_hitbox": {
+        "x_offset": 0,
+        "y_offset": 24,
+        "w": 58,
+        "h": 58
+      },
+      "throw_range": 56,
+      "throw_damage": 140,
+      "special_moves": [
+        "hundred_hand_slap",
+        "headbutt",
+        "sumo_splash"
+      ],
+      "normals": {
+        "light_punch": {
+          "startup": 4,
+          "active": 3,
+          "recovery": 8,
+          "damage": 32,
+          "hitstun": 13,
+          "blockstun": 5,
+          "cancel_window": 5
+        },
+        "medium_punch": {
+          "startup": 7,
+          "active": 4,
+          "recovery": 13,
+          "damage": 62,
+          "hitstun": 17,
+          "blockstun": 9,
+          "cancel_window": 4
+        },
+        "heavy_punch": {
+          "startup": 10,
+          "active": 5,
+          "recovery": 20,
+          "damage": 105,
+          "hitstun": 22,
+          "blockstun": 12,
+          "cancel_window": 3
+        },
+        "light_kick": {
+          "startup": 5,
+          "active": 3,
+          "recovery": 9,
+          "damage": 28,
+          "hitstun": 12,
+          "blockstun": 4,
+          "cancel_window": 5
+        },
+        "medium_kick": {
+          "startup": 8,
+          "active": 4,
+          "recovery": 15,
+          "damage": 56,
+          "hitstun": 16,
+          "blockstun": 8,
+          "cancel_window": 4
+        },
+        "heavy_kick": {
+          "startup": 13,
+          "active": 6,
+          "recovery": 22,
+          "damage": 96,
+          "hitstun": 22,
+          "blockstun": 12,
+          "cancel_window": 2
+        }
+      }
+    },
+    "balrog": {
+      "full_name": "Balrog (Boxer)",
+      "archetype": "charge",
+      "health": 1100,
+      "walk_speed": 3.8,
+      "back_walk_speed": 2.8,
+      "jump_velocity_x": 4.0,
+      "jump_height": 175,
+      "stand_hitbox": {
+        "x_offset": 0,
+        "y_offset": 0,
+        "w": 44,
+        "h": 82
+      },
+      "crouch_hitbox": {
+        "x_offset": 0,
+        "y_offset": 22,
+        "w": 48,
+        "h": 60
+      },
+      "throw_range": 52,
+      "throw_damage": 150,
+      "special_moves": [
+        "dash_straight",
+        "dash_uppercut",
+        "turn_punch"
+      ],
+      "normals": {
+        "light_punch": {
+          "startup": 4,
+          "active": 3,
+          "recovery": 8,
+          "damage": 36,
+          "hitstun": 14,
+          "blockstun": 5,
+          "cancel_window": 5,
+          "notes": "fast jab"
+        },
+        "medium_punch": {
+          "startup": 6,
+          "active": 4,
+          "recovery": 12,
+          "damage": 70,
+          "hitstun": 18,
+          "blockstun": 9,
+          "cancel_window": 4
+        },
+        "heavy_punch": {
+          "startup": 9,
+          "active": 5,
+          "recovery": 18,
+          "damage": 115,
+          "hitstun": 23,
+          "blockstun": 12,
+          "cancel_window": 3
+        },
+        "light_kick": {
+          "startup": 5,
+          "active": 3,
+          "recovery": 9,
+          "damage": 32,
+          "hitstun": 13,
+          "blockstun": 4,
+          "cancel_window": 5
+        },
+        "medium_kick": {
+          "startup": 8,
+          "active": 4,
+          "recovery": 14,
+          "damage": 62,
+          "hitstun": 17,
+          "blockstun": 8,
+          "cancel_window": 4
+        },
+        "heavy_kick": {
+          "startup": 12,
+          "active": 5,
+          "recovery": 21,
+          "damage": 100,
+          "hitstun": 22,
+          "blockstun": 11,
+          "cancel_window": 3
+        }
+      }
+    },
+    "vega": {
+      "full_name": "Vega (Claw)",
+      "archetype": "rushdown",
+      "health": 950,
+      "walk_speed": 5.0,
+      "back_walk_speed": 4.0,
+      "jump_velocity_x": 6.0,
+      "jump_height": 240,
+      "stand_hitbox": {
+        "x_offset": 0,
+        "y_offset": 0,
+        "w": 36,
+        "h": 80
+      },
+      "crouch_hitbox": {
+        "x_offset": 0,
+        "y_offset": 22,
+        "w": 40,
+        "h": 56
+      },
+      "throw_range": 44,
+      "throw_damage": 110,
+      "special_moves": [
+        "rolling_crystal_flash",
+        "flying_barcelona",
+        "sky_high_claw"
+      ],
+      "normals": {
+        "light_punch": {
+          "startup": 4,
+          "active": 3,
+          "recovery": 7,
+          "damage": 24,
+          "hitstun": 12,
+          "blockstun": 4,
+          "cancel_window": 6
+        },
+        "medium_punch": {
+          "startup": 6,
+          "active": 3,
+          "recovery": 11,
+          "damage": 48,
+          "hitstun": 16,
+          "blockstun": 7,
+          "cancel_window": 5
+        },
+        "heavy_punch": {
+          "startup": 8,
+          "active": 4,
+          "recovery": 16,
+          "damage": 88,
+          "hitstun": 20,
+          "blockstun": 10,
+          "cancel_window": 4,
+          "notes": "long claw stab"
+        },
+        "light_kick": {
+          "startup": 4,
+          "active": 3,
+          "recovery": 7,
+          "damage": 22,
+          "hitstun": 11,
+          "blockstun": 4,
+          "cancel_window": 6
+        },
+        "medium_kick": {
+          "startup": 6,
+          "active": 3,
+          "recovery": 12,
+          "damage": 46,
+          "hitstun": 15,
+          "blockstun": 7,
+          "cancel_window": 5
+        },
+        "heavy_kick": {
+          "startup": 10,
+          "active": 4,
+          "recovery": 18,
+          "damage": 84,
+          "hitstun": 20,
+          "blockstun": 10,
+          "cancel_window": 4
+        }
+      }
+    },
+    "sagat": {
+      "full_name": "Sagat",
+      "archetype": "zoner",
+      "health": 1100,
+      "walk_speed": 2.5,
+      "back_walk_speed": 2.0,
+      "jump_velocity_x": 3.0,
+      "jump_height": 160,
+      "stand_hitbox": {
+        "x_offset": 0,
+        "y_offset": 0,
+        "w": 44,
+        "h": 96
+      },
+      "crouch_hitbox": {
+        "x_offset": 0,
+        "y_offset": 28,
+        "w": 48,
+        "h": 68
+      },
+      "throw_range": 50,
+      "throw_damage": 140,
+      "special_moves": [
+        "tiger_shot_high",
+        "tiger_shot_low",
+        "tiger_uppercut"
+      ],
+      "normals": {
+        "light_punch": {
+          "startup": 5,
+          "active": 3,
+          "recovery": 9,
+          "damage": 38,
+          "hitstun": 14,
+          "blockstun": 6,
+          "cancel_window": 5
+        },
+        "medium_punch": {
+          "startup": 7,
+          "active": 4,
+          "recovery": 14,
+          "damage": 72,
+          "hitstun": 19,
+          "blockstun": 10,
+          "cancel_window": 4
+        },
+        "heavy_punch": {
+          "startup": 10,
+          "active": 5,
+          "recovery": 21,
+          "damage": 115,
+          "hitstun": 24,
+          "blockstun": 13,
+          "cancel_window": 3
+        },
+        "light_kick": {
+          "startup": 5,
+          "active": 3,
+          "recovery": 9,
+          "damage": 34,
+          "hitstun": 13,
+          "blockstun": 5,
+          "cancel_window": 5
+        },
+        "medium_kick": {
+          "startup": 8,
+          "active": 4,
+          "recovery": 15,
+          "damage": 66,
+          "hitstun": 18,
+          "blockstun": 9,
+          "cancel_window": 4
+        },
+        "heavy_kick": {
+          "startup": 12,
+          "active": 6,
+          "recovery": 23,
+          "damage": 106,
+          "hitstun": 24,
+          "blockstun": 13,
+          "cancel_window": 3,
+          "notes": "tiger knee — excellent poke range"
+        }
+      }
+    },
+    "bison": {
+      "full_name": "M. Bison (Dictator)",
+      "archetype": "charge",
+      "health": 1000,
+      "walk_speed": 3.0,
+      "back_walk_speed": 2.4,
+      "jump_velocity_x": 4.5,
+      "jump_height": 195,
+      "stand_hitbox": {
+        "x_offset": 0,
+        "y_offset": 0,
+        "w": 42,
+        "h": 84
+      },
+      "crouch_hitbox": {
+        "x_offset": 0,
+        "y_offset": 22,
+        "w": 46,
+        "h": 60
+      },
+      "throw_range": 48,
+      "throw_damage": 120,
+      "special_moves": [
+        "psycho_crusher",
+        "devil_reverse",
+        "head_stomp"
+      ],
+      "normals": {
+        "light_punch": {
+          "startup": 4,
+          "active": 3,
+          "recovery": 8,
+          "damage": 30,
+          "hitstun": 13,
+          "blockstun": 5,
+          "cancel_window": 6
+        },
+        "medium_punch": {
+          "startup": 6,
+          "active": 4,
+          "recovery": 12,
+          "damage": 58,
+          "hitstun": 17,
+          "blockstun": 8,
+          "cancel_window": 5
+        },
+        "heavy_punch": {
+          "startup": 9,
+          "active": 5,
+          "recovery": 18,
+          "damage": 98,
+          "hitstun": 22,
+          "blockstun": 11,
+          "cancel_window": 4
+        },
+        "light_kick": {
+          "startup": 5,
+          "active": 3,
+          "recovery": 8,
+          "damage": 28,
+          "hitstun": 12,
+          "blockstun": 4,
+          "cancel_window": 6
+        },
+        "medium_kick": {
+          "startup": 7,
+          "active": 4,
+          "recovery": 13,
+          "damage": 55,
+          "hitstun": 16,
+          "blockstun": 7,
+          "cancel_window": 5
+        },
+        "heavy_kick": {
+          "startup": 11,
+          "active": 5,
+          "recovery": 21,
+          "damage": 94,
+          "hitstun": 22,
+          "blockstun": 11,
+          "cancel_window": 3
+        }
+      }
+    }
+  },
+  "special_moves": {
+    "hadouken": {
+      "character": "ryu",
+      "name": "Hadouken",
+      "input_type": "qcf",
+      "input_sequence": [
+        "down",
+        "down_fwd",
+        "fwd",
+        "punch"
+      ],
+      "input_window_ms": 500,
+      "startup_frames": 11,
+      "active_frames": 14,
+      "recovery_frames": 38,
+      "damage": 40,
+      "projectile": true,
+      "projectile_speed": 6,
+      "projectile_lifetime_frames": 120,
+      "hitstun": 18,
+      "blockstun": 10,
+      "notes": "zoning fireball, forces opponent to jump or duck"
+    },
+    "shoryuken": {
+      "character": "ryu",
+      "name": "Shoryuken",
+      "input_type": "dp",
+      "input_sequence": [
+        "fwd",
+        "down",
+        "down_fwd",
+        "punch"
+      ],
+      "input_window_ms": 500,
+      "startup_frames": 3,
+      "active_frames": 6,
+      "recovery_frames": 28,
+      "damage": 80,
+      "invincible_frames": 9,
+      "is_anti_air": true,
+      "launches_opponent": true,
+      "hitstun": 24,
+      "notes": "invincible startup, main anti-air. Huge recovery — punishable on block"
+    },
+    "tatsumaki": {
+      "character": "ryu",
+      "name": "Tatsumaki Senpukyaku",
+      "input_type": "qcb",
+      "input_sequence": [
+        "down",
+        "down_back",
+        "back",
+        "kick"
+      ],
+      "input_window_ms": 500,
+      "startup_frames": 7,
+      "active_frames": 30,
+      "recovery_frames": 16,
+      "damage_per_hit": 20,
+      "max_hits": 3,
+      "total_damage": 60,
+      "crosses_screen": true,
+      "hitstun_per_hit": 14,
+      "notes": "multi-hit spinning kick, travels forward, can cross-up"
+    },
+    "ken_hadouken": {
+      "character": "ken",
+      "name": "Hadouken",
+      "input_type": "qcf",
+      "input_sequence": [
+        "down",
+        "down_fwd",
+        "fwd",
+        "punch"
+      ],
+      "input_window_ms": 500,
+      "startup_frames": 13,
+      "active_frames": 18,
+      "recovery_frames": 42,
+      "damage": 50,
+      "projectile": true,
+      "projectile_speed": 4,
+      "projectile_lifetime_frames": 140,
+      "hitstun": 20,
+      "blockstun": 12,
+      "notes": "slower than Ryu's but deals more damage. Ken rarely uses projectiles — rushdown char"
+    },
+    "ken_shoryuken": {
+      "character": "ken",
+      "name": "Shoryuken",
+      "input_type": "dp",
+      "input_sequence": [
+        "fwd",
+        "down",
+        "down_fwd",
+        "punch"
+      ],
+      "input_window_ms": 500,
+      "startup_frames": 3,
+      "active_frames": 8,
+      "recovery_frames": 26,
+      "damage": 120,
+      "invincible_frames": 7,
+      "is_anti_air": true,
+      "launches_opponent": true,
+      "multi_hit": true,
+      "hits": 2,
+      "hitstun": 26,
+      "notes": "higher damage than Ryu's, multi-hit on close range. Ken's best reversal"
+    },
+    "ken_tatsumaki": {
+      "character": "ken",
+      "name": "Tatsumaki Senpukyaku",
+      "input_type": "qcb",
+      "input_sequence": [
+        "down",
+        "down_back",
+        "back",
+        "kick"
+      ],
+      "input_window_ms": 500,
+      "startup_frames": 6,
+      "active_frames": 24,
+      "recovery_frames": 14,
+      "damage_per_hit": 18,
+      "max_hits": 4,
+      "total_damage": 72,
+      "crosses_screen": true,
+      "hitstun_per_hit": 13,
+      "notes": "faster and more hits than Ryu's; Ken uses this in combos"
+    },
+    "kikoken": {
+      "character": "chun_li",
+      "name": "Kikoken",
+      "input_type": "charge",
+      "charge_direction": "back",
+      "charge_duration_ms": 1000,
+      "release_direction": "fwd",
+      "release_button": "punch",
+      "startup_frames": 14,
+      "active_frames": 16,
+      "recovery_frames": 32,
+      "damage": 35,
+      "projectile": true,
+      "projectile_speed": 4,
+      "projectile_lifetime_frames": 130,
+      "hitstun": 16,
+      "blockstun": 9,
+      "notes": "charge fireball. Slower than Ryu's hadouken. Chun-Li must hold back to charge."
+    },
+    "spinning_bird_kick": {
+      "character": "chun_li",
+      "name": "Spinning Bird Kick",
+      "input_type": "charge",
+      "charge_direction": "down",
+      "charge_duration_ms": 1000,
+      "release_direction": "up",
+      "release_button": "kick",
+      "startup_frames": 9,
+      "active_frames": 32,
+      "recovery_frames": 24,
+      "damage_per_hit": 15,
+      "max_hits": 4,
+      "total_damage": 60,
+      "hitstun_per_hit": 12,
+      "notes": [
+        "CRITICAL: 'up' normally triggers a jump. Input system must detect completed charge",
+        "BEFORE processing jump input. Priority: special_move > jump.",
+        "If charge condition met when 'up+kick' pressed, execute SBK and suppress jump.",
+        "Chun-Li rises then descends spinning — hits multiple times on the way up and down.",
+        "The kick button must be pressed while releasing 'up', not after."
+      ]
+    },
+    "hyakuretsu_kyaku": {
+      "character": "chun_li",
+      "name": "Hyakuretsu Kyaku (Hundred Rending Legs)",
+      "input_type": "rapid_press",
+      "button": "kick",
+      "min_presses": 4,
+      "mash_window_ms": 500,
+      "damage_per_hit": 12,
+      "max_hits": 8,
+      "total_max_damage": 96,
+      "startup_frames": 5,
+      "active_frames_per_hit": 3,
+      "recovery_frames": 18,
+      "hitstun_per_hit": 10,
+      "notes": [
+        "Short-range rapid kicks. Each kick press within the window adds one hit.",
+        "Min 4 presses to activate. After activation, each additional press within window adds a hit.",
+        "After window expires with no new presses, move ends with recovery_frames.",
+        "Good close-range pressure but little range — can be stuffed by long normals."
+      ]
+    },
+    "sonic_boom": {
+      "character": "guile",
+      "name": "Sonic Boom",
+      "input_type": "charge",
+      "charge_direction": "back",
+      "charge_duration_ms": 1000,
+      "release_direction": "fwd",
+      "release_button": "punch",
+      "startup_frames": 9,
+      "active_frames": 20,
+      "recovery_frames": 28,
+      "damage": 38,
+      "projectile": true,
+      "projectile_speed": 9,
+      "projectile_lifetime_frames": 100,
+      "hitstun": 17,
+      "blockstun": 9,
+      "notes": "fast horizontal projectile; faster than Ryu's hadouken but no arc variation"
+    },
+    "flash_kick": {
+      "character": "guile",
+      "name": "Flash Kick",
+      "input_type": "charge",
+      "charge_direction": "down",
+      "charge_duration_ms": 1000,
+      "release_direction": "up",
+      "release_button": "kick",
+      "startup_frames": 4,
+      "active_frames": 8,
+      "recovery_frames": 32,
+      "damage": 90,
+      "invincible_frames": 6,
+      "is_anti_air": true,
+      "launches_opponent": true,
+      "hitstun": 26,
+      "notes": "excellent anti-air; input conflict with jump — same as SBK, special takes priority"
+    },
+    "rolling_attack": {
+      "character": "blanka",
+      "name": "Rolling Attack",
+      "input_type": "charge",
+      "charge_direction": "back",
+      "charge_duration_ms": 1000,
+      "release_direction": "fwd",
+      "release_button": "punch",
+      "startup_frames": 12,
+      "active_frames": 18,
+      "recovery_frames": 22,
+      "damage": 70,
+      "multi_hit": true,
+      "hits": 3,
+      "hitstun_per_hit": 14,
+      "notes": "horizontal rolling ball; high damage but long recovery on whiff/block"
+    },
+    "electric_thunder": {
+      "character": "blanka",
+      "name": "Electric Thunder",
+      "input_type": "rapid_press",
+      "button": "punch",
+      "min_presses": 3,
+      "mash_window_ms": 400,
+      "damage_per_hit": 14,
+      "max_hits": 10,
+      "startup_frames": 3,
+      "active_frames_per_hit": 2,
+      "recovery_frames": 16,
+      "hitstun_per_hit": 9,
+      "notes": "mash-activated body electricity; hits everything adjacent; excellent wakeup"
+    },
+    "vertical_rolling": {
+      "character": "blanka",
+      "name": "Vertical Rolling Attack",
+      "input_type": "charge",
+      "charge_direction": "down",
+      "charge_duration_ms": 1000,
+      "release_direction": "up",
+      "release_button": "kick",
+      "startup_frames": 8,
+      "active_frames": 14,
+      "recovery_frames": 26,
+      "damage": 60,
+      "is_anti_air": false,
+      "hitstun": 20,
+      "notes": "vertical roll; can cross-up; bad anti-air due to hurtbox"
+    },
+    "spinning_piledriver": {
+      "character": "zangief",
+      "name": "Spinning Piledriver",
+      "input_type": "360",
+      "input_sequence": [
+        "fwd",
+        "down_fwd",
+        "down",
+        "down_back",
+        "back",
+        "up_back",
+        "up",
+        "up_fwd",
+        "fwd",
+        "punch"
+      ],
+      "input_window_ms": 600,
+      "startup_frames": 2,
+      "active_frames": 4,
+      "recovery_frames": 20,
+      "damage": 200,
+      "is_command_throw": true,
+      "throw_range": 60,
+      "hitstun": 999,
+      "notes": "360-motion command throw; unblockable; huge damage; requires proximity; walk toward, then do the motion in one sweep"
+    },
+    "double_lariat": {
+      "character": "zangief",
+      "name": "Double Lariat (Spinning Clothesline)",
+      "input_type": "simultaneous",
+      "buttons": [
+        "punch",
+        "punch"
+      ],
+      "simultaneous_buttons": [
+        "light_punch",
+        "heavy_punch"
+      ],
+      "startup_frames": 6,
+      "active_frames": 40,
+      "recovery_frames": 20,
+      "damage_per_hit": 25,
+      "max_hits": 4,
+      "invincible_frames": 4,
+      "hitstun_per_hit": 12,
+      "notes": "press 3 punches simultaneously; spinning both arms; hits both sides; beats most projectiles"
+    },
+    "yoga_fire": {
+      "character": "dhalsim",
+      "name": "Yoga Fire",
+      "input_type": "qcf",
+      "input_sequence": [
+        "down",
+        "down_fwd",
+        "fwd",
+        "punch"
+      ],
+      "input_window_ms": 500,
+      "startup_frames": 16,
+      "active_frames": 24,
+      "recovery_frames": 36,
+      "damage": 32,
+      "projectile": true,
+      "projectile_speed": 3,
+      "projectile_lifetime_frames": 160,
+      "hitstun": 15,
+      "blockstun": 8,
+      "notes": "slow-moving fireball; floats at head height; passes under hadouken if timed"
+    },
+    "yoga_flame": {
+      "character": "dhalsim",
+      "name": "Yoga Flame",
+      "input_type": "hcb",
+      "input_sequence": [
+        "fwd",
+        "down_fwd",
+        "down",
+        "down_back",
+        "back",
+        "punch"
+      ],
+      "input_window_ms": 500,
+      "startup_frames": 20,
+      "active_frames": 30,
+      "recovery_frames": 30,
+      "damage": 60,
+      "is_close_range": true,
+      "range_px": 60,
+      "hitstun": 22,
+      "notes": "large close-range fireball burst; beats projectiles cleanly; punishable whiff"
+    },
+    "yoga_teleport": {
+      "character": "dhalsim",
+      "name": "Yoga Teleport",
+      "input_type": "dp_or_rdp",
+      "input_sequence_fwd": [
+        "fwd",
+        "down",
+        "down_fwd",
+        "punch_or_kick"
+      ],
+      "input_sequence_back": [
+        "back",
+        "down",
+        "down_back",
+        "punch_or_kick"
+      ],
+      "input_window_ms": 500,
+      "startup_frames": 10,
+      "travel_frames": 8,
+      "recovery_frames": 20,
+      "damage": 0,
+      "notes": "teleport forward or backward; use punch buttons for short, kick for long distance; invincible during travel"
+    },
+    "hundred_hand_slap": {
+      "character": "e_honda",
+      "name": "Hundred Hand Slap",
+      "input_type": "rapid_press",
+      "button": "punch",
+      "min_presses": 4,
+      "mash_window_ms": 500,
+      "damage_per_hit": 15,
+      "max_hits": 9,
+      "startup_frames": 5,
+      "active_frames_per_hit": 2,
+      "recovery_frames": 20,
+      "hitstun_per_hit": 10,
+      "notes": "horizontal rapid palm slaps; pushes opponent back; beats most mid-range normals; good punish tool"
+    },
+    "headbutt": {
+      "character": "e_honda",
+      "name": "Sumo Headbutt",
+      "input_type": "charge",
+      "charge_direction": "back",
+      "charge_duration_ms": 1000,
+      "release_direction": "fwd",
+      "release_button": "punch",
+      "startup_frames": 8,
+      "active_frames": 10,
+      "recovery_frames": 24,
+      "damage": 85,
+      "invincible_frames": 3,
+      "hitstun": 22,
+      "notes": "charging horizontal headbutt; good damage; punishable on block but can be spaced"
+    },
+    "sumo_splash": {
+      "character": "e_honda",
+      "name": "Sumo Splash (Flying Body Attack)",
+      "input_type": "charge",
+      "charge_direction": "down",
+      "charge_duration_ms": 1000,
+      "release_direction": "up",
+      "release_button": "kick",
+      "startup_frames": 10,
+      "active_frames": 12,
+      "recovery_frames": 28,
+      "damage": 100,
+      "is_overhead": true,
+      "hitstun": 24,
+      "notes": "vertical jump splash; must block high; big damage if hits; very slow startup"
+    },
+    "dash_straight": {
+      "character": "balrog",
+      "name": "Dash Straight",
+      "input_type": "charge",
+      "charge_direction": "back",
+      "charge_duration_ms": 1000,
+      "release_direction": "fwd",
+      "release_button": "punch",
+      "startup_frames": 10,
+      "active_frames": 6,
+      "recovery_frames": 18,
+      "damage": 80,
+      "hitstun": 20,
+      "notes": "forward rushing punch; mid-screen threat; good damage; blockstun creates safe pressure"
+    },
+    "dash_uppercut": {
+      "character": "balrog",
+      "name": "Dash Uppercut",
+      "input_type": "charge",
+      "charge_direction": "back",
+      "charge_duration_ms": 1000,
+      "release_direction": "fwd",
+      "release_button": "kick",
+      "startup_frames": 8,
+      "active_frames": 8,
+      "recovery_frames": 22,
+      "damage": 100,
+      "is_anti_air": true,
+      "launches_opponent": true,
+      "hitstun": 24,
+      "notes": "launches for juggle; anti-air capable; more recovery than dash straight"
+    },
+    "turn_punch": {
+      "character": "balrog",
+      "name": "Turn Punch (Buffalo Headbutt)",
+      "input_type": "charge",
+      "charge_direction": "any",
+      "charge_duration_ms": 2000,
+      "release_button": "punch",
+      "startup_frames": 6,
+      "active_frames": 10,
+      "recovery_frames": 24,
+      "damage": 150,
+      "invincible_frames": 6,
+      "hitstun": 28,
+      "notes": "hold any button for 2 seconds then release; huge damage but telegraphed; full-screen range"
+    },
+    "rolling_crystal_flash": {
+      "character": "vega",
+      "name": "Rolling Crystal Flash",
+      "input_type": "charge",
+      "charge_direction": "back",
+      "charge_duration_ms": 1000,
+      "release_direction": "fwd",
+      "release_button": "punch",
+      "startup_frames": 14,
+      "active_frames": 20,
+      "recovery_frames": 20,
+      "damage": 60,
+      "multi_hit": true,
+      "hits": 3,
+      "hitstun_per_hit": 14,
+      "notes": "claw-first rolling advance; multi-hit close range; main combo ender"
+    },
+    "flying_barcelona": {
+      "character": "vega",
+      "name": "Flying Barcelona Attack",
+      "input_type": "charge",
+      "charge_direction": "down",
+      "charge_duration_ms": 1000,
+      "release_direction": "up",
+      "release_button": "kick",
+      "startup_frames": 8,
+      "travel_frames": 16,
+      "active_frames": 6,
+      "recovery_frames": 18,
+      "damage": 90,
+      "is_wall_jump": true,
+      "hitstun": 22,
+      "notes": "jumps to wall then lunges at opponent; can redirect with punch for izuna drop (throw on hit)"
+    },
+    "sky_high_claw": {
+      "character": "vega",
+      "name": "Sky High Claw",
+      "input_type": "charge",
+      "charge_direction": "down",
+      "charge_duration_ms": 1000,
+      "release_direction": "up",
+      "release_button": "punch",
+      "startup_frames": 10,
+      "active_frames": 10,
+      "recovery_frames": 24,
+      "damage": 80,
+      "is_anti_air": true,
+      "hitstun": 20,
+      "notes": "jumping upward claw slash; anti-air; can lose claw if hit (goes to no-claw mode)"
+    },
+    "tiger_shot_high": {
+      "character": "sagat",
+      "name": "Tiger Shot (High)",
+      "input_type": "qcf",
+      "input_sequence": [
+        "down",
+        "down_fwd",
+        "fwd",
+        "punch"
+      ],
+      "input_window_ms": 500,
+      "startup_frames": 12,
+      "active_frames": 18,
+      "recovery_frames": 34,
+      "damage": 50,
+      "projectile": true,
+      "projectile_speed": 7,
+      "projectile_height": "high",
+      "projectile_lifetime_frames": 110,
+      "hitstun": 20,
+      "blockstun": 12,
+      "notes": "fast high-trajectory projectile; beats standing and jumping opponents"
+    },
+    "tiger_shot_low": {
+      "character": "sagat",
+      "name": "Tiger Shot (Low)",
+      "input_type": "qcf",
+      "input_sequence": [
+        "down",
+        "down_fwd",
+        "fwd",
+        "kick"
+      ],
+      "input_window_ms": 500,
+      "startup_frames": 14,
+      "active_frames": 18,
+      "recovery_frames": 34,
+      "damage": 45,
+      "projectile": true,
+      "projectile_speed": 7,
+      "projectile_height": "low",
+      "projectile_lifetime_frames": 110,
+      "hitstun": 18,
+      "blockstun": 10,
+      "notes": "low-trajectory projectile; forces opponents to jump or stand-block (cannot duck)"
+    },
+    "tiger_uppercut": {
+      "character": "sagat",
+      "name": "Tiger Uppercut",
+      "input_type": "dp",
+      "input_sequence": [
+        "fwd",
+        "down",
+        "down_fwd",
+        "punch"
+      ],
+      "input_window_ms": 500,
+      "startup_frames": 4,
+      "active_frames": 8,
+      "recovery_frames": 30,
+      "damage": 100,
+      "invincible_frames": 8,
+      "is_anti_air": true,
+      "launches_opponent": true,
+      "hitstun": 26,
+      "notes": "extremely fast anti-air; even more invincible than shoryuken; Sagat is the boss tier character"
+    },
+    "psycho_crusher": {
+      "character": "bison",
+      "name": "Psycho Crusher",
+      "input_type": "charge",
+      "charge_direction": "back",
+      "charge_duration_ms": 1000,
+      "release_direction": "fwd",
+      "release_button": "punch",
+      "startup_frames": 10,
+      "active_frames": 24,
+      "recovery_frames": 18,
+      "damage": 80,
+      "multi_hit": true,
+      "hits": 4,
+      "invincible_frames": 4,
+      "hitstun_per_hit": 14,
+      "notes": "full-screen flying punch wrapped in psycho energy; goes through most projectiles"
+    },
+    "devil_reverse": {
+      "character": "bison",
+      "name": "Devil Reverse",
+      "input_type": "charge",
+      "charge_direction": "down",
+      "charge_duration_ms": 1000,
+      "release_direction": "up",
+      "release_button": "punch",
+      "startup_frames": 12,
+      "active_frames": 10,
+      "recovery_frames": 20,
+      "damage": 70,
+      "is_overhead": true,
+      "hitstun": 22,
+      "notes": "leaps up then drives fist down; overhead that must be blocked standing; tricky mix-up with psycho crusher"
+    },
+    "head_stomp": {
+      "character": "bison",
+      "name": "Head Stomp (Scissor Kick)",
+      "input_type": "charge",
+      "charge_direction": "back",
+      "charge_duration_ms": 1000,
+      "release_direction": "fwd",
+      "release_button": "kick",
+      "startup_frames": 8,
+      "active_frames": 12,
+      "recovery_frames": 16,
+      "damage": 75,
+      "hits": 2,
+      "hitstun": 20,
+      "notes": "two-hit scissor-kick; covers horizontal distance; good combo starter"
+    }
+  },
+  "design_notes": {
+    "ryu_vs_ken_philosophy": "Ryu is the balanced zoner — reliable hadouken, solid anti-air shoryuken, consistent damage. Ken is the rushdown variant — faster walk speed, higher jump arc for cross-ups, weaker fireball but stronger shoryuken damage for punishes.",
+    "chun_li_philosophy": "Chun-Li is the fastest character with the best walk speed. She rewards patient charge management. Her lack of a fast overhead special is compensated by exceptional normal move speed and the hyakuretsu kyaku pressure tool.",
+    "charge_management": "Charge characters must balance holding charge direction (which restricts movement) with footsies and positioning. A good Chun-Li player is always pre-charging their next special move.",
+    "input_priority_rule": "Special moves always have priority over normals and system commands. This is essential for charge moves using 'up' (SBK) — the system must never process a jump when a charge special is valid."
+  }
+}

@@ -1,0 +1,19 @@
+=== Game Research: Street Fighter 2 — 2D arcade ===
+
+[Mechanics & Features]
+• Street Fighter II: The World Warrior (ストリートファイターⅡ, Sutorīto Faitā Tsū?) is a 1991 2D fighting game produced by Capcom originally released as an arcade game and the second main installment in the popular Street Fighter series. A sequel to the original Street Fighter , Street Fighter II improved upon 
+• Super Moves (SSF2T only) Super Moves were added to the game in Super Street Fighter II Turbo. In addition to the health bar shown at the top of the screen, each player has a super meter at the bottom. As the player attacks and damages the opponent, and as the player takes damage from the opponent, t
+• Street Fighter II: The World Warrior[c] is a 1991 fighting game developed and published by Capcom for arcades . It is the second installment in the Street Fighter series, and the sequel to 1987&#x27;s Street Fighter . Designed by Yoshiki Okamoto and Akira Yasuda, who had previously worked on the gam
+• Special moves are triggered through specific combinations of directional inputs and button presses. One of the major differences in Street Fighter II compared to its predecessor is the introduction of multiple playable characters, each featuring unique fighting styles and signature special moves, in
+
+[Design Best Practices]
+• At one point, Harada asks how Nishitani and the Capcom team managed to set a new bar for game design with Street Fighter II. For the veteran game designer, it wasn&#x27;t about honing in on a specific mechanic, but rather about fixing some glaring mistakes and dialing up the fun factor.
+• The Revival of Arcade Fighting Games in the Early &#x27;90s Back in the early 1990s, arcade games experienced a massive resurgence, largely fueled by the legendary fighting game Street Fighter II. This wasn&#x27;t just any game — it fundamentally transformed the one-on-one fighting genre into a worl
+• Street Fighter II remains a shining example of responsive game mechanics and visual communication. Its balanced character design , strategic depth, and emphasis on skill make it one of the most enduring and influential titles in gaming history.
+• not sure if this is allowed here but this is a cool deep dive into how the graphics were assembled in the CP-1 arcade era for Street Fighter 2 sprites. the technology was replaced with newer tools for later releases like Super Street Fighter 2 but this shows how much labor went into making those ico
+
+[Community Feedback]
+• Super Street Fighter II Turbo. It has a lot of players on fightcade, and there&#x27;s often tournaments at the game centers in Japan. I also like CE because its the most enjoyable of the games before supers and other game mechanics were added.
+• Street Fighter II: The World Warrior (ストリートファイターⅡ, Sutorīto Faitā Tsū?) is a 1991 2D fighting game produced by Capcom originally released as an arcade game and the second main installment in the popular Street Fighter series. A sequel to the original Street Fighter , Street Fighter II improved upon 
+• Street Fighter II: The World Warrior[c] is a 1991 fighting game developed and published by Capcom for arcades . It is the second installment in the Street Fighter series, and the sequel to 1987&#x27;s Street Fighter . Designed by Yoshiki Okamoto and Akira Yasuda, who had previously worked on the gam
+• With Street Fighter&#x27;s 30th anniversary, Capcom decided to release a new version of Super Street Fighter 2 : Turbo. It features a few balance updates and includes a few new modes, like a first-person mode called &quot;Way of the Hado.&quot; It also added two characters: Evil Ryu and Violent Ken,

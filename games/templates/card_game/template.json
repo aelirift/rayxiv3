@@ -1,0 +1,9 @@
+{
+  "genre": "card_game",
+  "name": "Card Game Engine",
+  "description": "Base template for turn-based card games. Supports creatures, spells, combat, life points. Mechanics (mana, traps, tribute) plug in as separate modules.",
+  "engine": "godot",
+  "version": "1.0.0",
+  "supported_mechanics": ["basic_combat", "life_points", "draw_phase"],
+  "planned_mechanics": ["mana_system", "tribute_summon", "trap_cards", "energy_system", "evolution"]
+}

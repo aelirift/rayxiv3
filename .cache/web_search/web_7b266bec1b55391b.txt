@@ -1,0 +1,19 @@
+=== Game Research: Street Fighter 2: 2D fighting game ===
+
+[Mechanics & Features]
+• Super Moves (SSF2T only) Super Moves were added to the game in Super Street Fighter II Turbo. In addition to the health bar shown at the top of the screen, each player has a super meter at the bottom. As the player attacks and damages the opponent, and as the player takes damage from the opponent, t
+• Street Fighter II is regarded as one of the most influential video games of all time, [227][228][229] and the most important fighting game in particular. [229][230][231] The release of Street Fighter II in 1991 is often considered a revolutionary moment in the fighting game genre.
+• Special moves are triggered through specific combinations of directional inputs and button presses. One of the major differences in Street Fighter II compared to its predecessor is the introduction of multiple playable characters, each featuring unique fighting styles and signature special moves, in
+• Street Fighter II: The World Warrior (ストリートファイターⅡ, Sutorīto Faitā Tsū?) is a 1991 2D fighting game produced by Capcom originally released as an arcade game and the second main installment in the popular Street Fighter series. A sequel to the original Street Fighter , Street Fighter II improved upon 
+
+[Design Best Practices]
+• Akira &#x27;Nin-Nin&#x27; Nishitani is a legend in the Fighting Game Community, having served as the planner of Street Fighter 2 , and occupying key roles during the development of the Street Fighter EX ...
+• At one point, Harada asks how Nishitani and the Capcom team managed to set a new bar for game design with Street Fighter II. For the veteran game designer, it wasn&#x27;t about honing in on a specific mechanic, but rather about fixing some glaring mistakes and dialing up the fun factor.
+• The Osaka based company seemed to produce one hit after another with Ghouls&#x27;n Ghosts in 1988, Final Fight in 1989 and Street Fighter II in 1991 among a myriad of other excellent games . During this era, a video- game enthusiast could not go to an arcade without seeing multiple Capcom cabinets, 
+• A: Implementing combat mechanics is crucial in a fighting game . Research Street Fighter&#x27;s mechanics, study its behavior, and use Unity&#x27;s physics and collision detection systems to create a realistic experience. Q: What is the most challenging part of creating a Street Fighter game in Unit
+
+[Community Feedback]
+• Street Fighter II: The World Warrior (ストリートファイターⅡ, Sutorīto Faitā Tsū?) is a 1991 2D fighting game produced by Capcom originally released as an arcade game and the second main installment in the popular Street Fighter series. A sequel to the original Street Fighter , Street Fighter II improved upon 
+• Street Fighter II is regarded as one of the most influential video games of all time, [227][228][229] and the most important fighting game in particular. [229][230][231] The release of Street Fighter II in 1991 is often considered a revolutionary moment in the fighting game genre.
+• So like most people I fell in love with Street Fighter on the SNES with Street Fighter 2 . I followed the series for a while as they released twenty five different versions of SF2 over the years.
+• When I reviewed the original Street Fighter , it was clear that the series got off to a shaky start. Street Fighter 2 is where the games found their footing and created a strong foundation that&#x27;s still used today. There are countless versions of Street Fighter 2 . I&#x27;m playing &#x27;World W

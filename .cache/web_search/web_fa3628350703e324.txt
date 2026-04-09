@@ -1,0 +1,13 @@
+=== Game Research: Mario Kart racing game: top-down 2D ===
+
+[Mechanics & Features]
+• Home Welcome to the Mario Kart Racing Wiki, a community database centered on the famous Mario Kart series! Since the site&#x27;s creation on November 8, 2007, the community has created 1,273 articles and has compiled a total of 102,819 edits. Anyone can contribute to the wiki by improving pages, upl
+• Mario Kart[a] is a series of kart racing games based on the Mario franchise developed and published by Nintendo. Players compete in go- kart races while using various power-up items. It features characters from the Mario series racing along tracks based on Mario universe-locations. Some releases hav
+• Mario Kart is a series of kart racing games primarily developed and published by Nintendo as a spin-off of its flagship Super Mario franchise. The series was inaugurated in 1992 with its debut entry, Super Mario Kart for the Super Nintendo Entertainment System, which was critically and commercially 
+• The Mario Kart series has carved out a unique identity for itself within the racing genre. On the one hand, it is designed with casual fun in mind, allowing anyone to jump into a game regardless ...
+
+[Design Best Practices]
+• With this racing game tutorial series by Pretty Fly Games , you&#x27;ll see how to apply the physics needed for a top-down 2D racing game , including how to implement smooth movement and drift to your car.
+• A bite‑sized, top‑down Mario Kart‑style game built with Pygame: Maps are ASCII strings → instant prototyping Race solo with the keyboard or watch the A* path‑finding AI clear the circuit Supports boosts, lava pits, checkpoints, lap timing &amp; collision
+• We&#x27;ll also build a complete 2D top down racing game using this car controller. In the series we&#x27;ll cover 2D arcade style top down car movement and physics, visual details such as skidmarks and particle effects, jumping in top down games , check points and lap handling, local and online mul
+• The subreddit covers various game development aspects, including programming, design , writing, art, game jams, postmortems, and marketing. It serves as a hub for game creators to discuss and share their insights, experiences, and expertise in the industry.

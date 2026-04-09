@@ -1,0 +1,5 @@
+.godot/
+__pycache__/
+*.pyc
+.env
+logs/

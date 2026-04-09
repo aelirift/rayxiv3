@@ -1,0 +1,19 @@
+=== Game Research: Yu-Gi-Oh card game: two players each ===
+
+[Mechanics & Features]
+• Learn how to play Yu-Gi-Oh ! with this complete rules guide covering turn phases, summoning methods, card types, and winning strategies for beginners and returning players .
+• A Duel (Japanese: デュエル[Notes 1] Dyueru) is a single game between two opposing players or teams, who use a variety of Monster, Spell, and Trap Cards to defeat their opponent and win the game . A Duel progresses in a series of turns which passes between players as the Priority does to organize the pla
+• In this game , two players Duel each other using a variety of Monster, Spell, and Trap Cards to defeat their opponent&#x27;s monsters and be the first to drop the other&#x27;s LP (Life Points) to 0.
+• Master the Yu-Gi-Oh ! Trading Card Game rules with this comprehensive guide. From basic summoning to advanced strategies, learn everything you need to know to duel like a champion. Perfect for beginners and experienced players alike!
+
+[Design Best Practices]
+• Learn how to play Yu-Gi-Oh ! with this complete rules guide covering turn phases, summoning methods, card types, and winning strategies for beginners and returning players .
+• A Tag-Team Duel (タッグヂュエル Taggu Dyueru) (also known as &quot;2v2 Duel&quot; or &quot;Tag Duel&quot;) is a Duel played between two teams of 2 players each . All standard rules apply, and each team is given a shared LP counter of 16000. See TCG Official Tag Duel Rules as of August 27th, 2013. When taki
+• In this game , two players Duel each other using a variety of Monster, Spell, and Trap Cards to defeat their opponent&#x27;s monsters and be the first to drop the other&#x27;s LP (Life Points) to 0.
+• Looking for the best beginner&#x27;s guide for the Yu-Gi-Oh ! Trading Card Game ? Let&#x27;s talk types of decks, cards , and how to conquer a battlefield.
+
+[Community Feedback]
+• 2-Player Starter Set is a Starter Deck in the Yu-Gi-Oh ! Trading Card Game . This set was originally scheduled to be released in North America on October 27, 2023, but its release was delayed until January 26, 2024. No official reason was provided for the delay.[1]
+• The upcoming Yu-Gi-Oh 2-Player Starter Set&#x27;s uniquely tailored to help introduce new players to the game with two full sized playable decks, and a scripted duel scenario to follow along with. It&#x27;s a significant upgrade from the 2015 2-Player Starter Deck Yuya &amp; Declan, which only featu
+• The subreddit for the Yu-Gi-Oh ! card game , video games , anime and manga.
+• The 2-Player Starter Set guides you through a duel step by step, before leaving the players to finish the game themselves. | Image credit: Dicebreaker/Konami Yu-Gi-Oh!&#x27;s new 2-Player Starter Set is an attempt to bridge the gap between the hands-off rules management of Master Duel and the detail
