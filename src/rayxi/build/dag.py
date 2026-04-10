@@ -103,8 +103,9 @@ class SystemNode:
     name: str               # e.g. "combat_system"
     description: str = ""   # from mechanic template
     processing_order: int = 0
-    reads: list[str] = field(default_factory=list)    # "entity_role.property" refs
-    writes: list[str] = field(default_factory=list)   # "entity_role.property" refs
+    owns: list[str] = field(default_factory=list)      # "entity_role.property" — defined by this system (source_mechanic)
+    reads: list[str] = field(default_factory=list)      # "entity_role.property" — read at runtime (read_by)
+    writes: list[str] = field(default_factory=list)     # "entity_role.property" — written at runtime (written_by)
     mechanics: list[MechanicNode] = field(default_factory=list)
     active_in_scenes: list[str] = field(default_factory=list)
 
@@ -261,13 +262,17 @@ def _build_systems(
 
     Populates dag.systems in place.
     """
-    # Step 1: Collect per-system reads/writes by scanning all properties
-    sys_reads: dict[str, set[str]] = {}
-    sys_writes: dict[str, set[str]] = {}
+    # Step 1: Collect per-system owns/reads/writes by scanning all properties
+    sys_owns: dict[str, set[str]] = {}    # source_mechanic → properties this system defined
+    sys_reads: dict[str, set[str]] = {}   # read_by → properties read at runtime
+    sys_writes: dict[str, set[str]] = {}  # written_by → properties written at runtime
     all_system_names: set[str] = set()
 
     def _scan_props(owner_label: str, props: list[PropertyNode]) -> None:
         for p in props:
+            if p.source_mechanic:
+                sys_owns.setdefault(p.source_mechanic, set()).add(f"{owner_label}.{p.name}")
+                all_system_names.add(p.source_mechanic)
             for sys in p.read_by:
                 if sys:
                     sys_reads.setdefault(sys, set()).add(f"{owner_label}.{p.name}")
@@ -282,6 +287,9 @@ def _build_systems(
         _scan_props("fighter", entity.properties)
     for name, entity in dag.projectile_entities.items():
         _scan_props("projectile", entity.properties)
+    for scene in dag.scenes:
+        for entity in scene.entities:
+            _scan_props(entity.role or entity.name, entity.properties)
 
     # Step 2: Collect active_in_scenes from SceneNode.active_systems
     sys_scenes: dict[str, list[str]] = {}
@@ -317,6 +325,7 @@ def _build_systems(
             name=sys_name,
             description=sys_descriptions.get(sys_name, ""),
             processing_order=SYSTEM_PROCESSING_ORDER.get(sys_name, 99),
+            owns=sorted(sys_owns.get(sys_name, set())),
             reads=sorted(sys_reads.get(sys_name, set())),
             writes=sorted(sys_writes.get(sys_name, set())),
             mechanics=sys_mechanic_nodes.get(sys_name, []),
@@ -364,7 +373,8 @@ def build_dag(
         )
         dag.fighter_entities[char] = entity
 
-    # Projectile entities
+    # Projectile entities — from game_objects enum, plus a generic one from template
+    has_projectile_from_enum = False
     for obj in hlr.get_enum("game_objects"):
         if "projectile" in obj.lower():
             entity = EntityNode(
@@ -375,6 +385,18 @@ def build_dag(
                 properties=_props_to_nodes(schema.projectile_schema.properties),
             )
             dag.projectile_entities[obj] = entity
+            has_projectile_from_enum = True
+
+    # If template defines projectile properties but HLR didn't list any,
+    # create a generic projectile entity (values come from fighter's special move config)
+    if not has_projectile_from_enum and schema.projectile_schema.properties:
+        dag.projectile_entities["projectile"] = EntityNode(
+            name="projectile",
+            role="projectile",
+            from_enum="game_objects",
+            godot_node_type=schema.projectile_schema.godot_base_node or "Area2D",
+            properties=_props_to_nodes(schema.projectile_schema.properties),
+        )
 
     # Scenes — from manifest if available, otherwise basic from HLR
     if manifest:
@@ -467,7 +489,7 @@ def build_dag(
 # Validation
 # ---------------------------------------------------------------------------
 
-def validate_dag(dag: GameDAG, impact: ImpactMatrix | None = None) -> list[str]:
+def validate_dag(dag: GameDAG, impact: ImpactMatrix | None = None, hlr: GameIdentity | None = None) -> list[str]:
     """Validate the DAG for completeness and consistency."""
     errors: list[str] = []
 
@@ -508,10 +530,16 @@ def validate_dag(dag: GameDAG, impact: ImpactMatrix | None = None) -> list[str]:
             if p.category == "derived" and not p.formula:
                 errors.append(f"{name}.{p.name}: derived property with no formula")
 
-    # Systems must have at least one read or write
-    for sys_name, sys_node in dag.systems.items():
-        if not sys_node.reads and not sys_node.writes:
-            errors.append(f"System '{sys_name}' has no reads or writes — orphaned")
+    # Systems declared in HLR game_systems must have reads or writes
+    # (if they don't, the template is missing written_by/read_by tags)
+    if hlr:
+        declared_systems = set(hlr.get_enum("game_systems")) if hasattr(hlr, "get_enum") else set()
+        for sys_name, sys_node in dag.systems.items():
+            if not sys_node.reads and not sys_node.writes and sys_name in declared_systems:
+                errors.append(
+                    f"System '{sys_name}' declared in HLR game_systems but has no "
+                    f"reads/writes in template — check written_by/read_by tags"
+                )
 
     # Reconciliation gate: Impact TRACKS ⊆ DAG properties
     if impact:

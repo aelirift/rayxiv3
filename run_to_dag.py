@@ -19,9 +19,13 @@ async def main():
     from rayxi.build.dag import build_dag, format_dag_summary, validate_dag
     from rayxi.knowledge.mechanic_loader import format_schema_summary, load_game_schema
     from rayxi.llm.callers import build_callers, build_router
+    from rayxi.spec.deterministic import (
+        build_all_interactions,
+        build_entity_spec,
+        build_impact_matrix as build_impact_deterministic,
+    )
     from rayxi.spec.hlr import run_hlr
     from rayxi.spec.hlr_validator import validate_hlr
-    from rayxi.spec.impact import run_impact_matrix
     from rayxi.spec.impact_validator import validate_impact_matrix
     from rayxi.spec.mlr import run_mlr
     from rayxi.spec.mlr_validator import validate_mlr
@@ -71,13 +75,15 @@ async def main():
     schema = load_game_schema(template_path, hlr)
     print(format_schema_summary(schema))
 
-    # STEP 3: Impact Matrix
+    # STEP 3: Impact Matrix (deterministic — zero LLM calls)
     print("\n" + "=" * 70)
-    print("STEP 3: Impact Matrix")
+    print("STEP 3: Impact Matrix (deterministic)")
     print("=" * 70)
     t = time.time()
-    impact = await run_impact_matrix(hlr, caller, schema=schema)
-    print(f"  [{time.time()-t:.1f}s] {len(impact.entries)} entries, {len(impact.mechanics)} mechanics")
+    systems = hlr.get_enum("game_systems")
+    characters = hlr.get_enum("characters")
+    impact = build_impact_deterministic(schema, systems, characters)
+    print(f"  [{time.time()-t:.3f}s] {len(impact.entries)} entries, {len(impact.mechanics)} mechanics")
     print(f"  Properties traced: {len(impact.all_properties())}")
     impact_errors = validate_impact_matrix(hlr, impact)
     if impact_errors:
@@ -101,12 +107,34 @@ async def main():
         for e in manifest_errors[:10]:
             print(f"    x {e}")
 
-    # STEP 5: MLR
+    # STEP 5: MLR (hybrid — FSM/collisions from LLM, interactions/entities deterministic)
     print("\n" + "=" * 70)
-    print("STEP 5: MLR")
+    print("STEP 5: MLR (hybrid)")
     print("=" * 70)
     t = time.time()
-    mlr_scenes = await run_mlr(hlr, router, schema=schema)
+
+    # FSM + collisions still need LLM (game flow is genre-specific)
+    # Interactions + entities are deterministic from template
+    mlr_scenes = await run_mlr(hlr, router, schema=schema, fsm_only=True)
+
+    # Replace LLM-generated interactions + entities with deterministic versions
+    from rayxi.spec.mlr import _flatten_scenes, _entities_for_scene, SceneMLR
+    for scene_mlr in mlr_scenes:
+        # Deterministic interactions
+        scene_mlr.system_interactions = build_all_interactions(
+            schema, systems, scene_mlr.scene_name,
+        )
+        # Deterministic entity specs
+        hlr_scene = next(
+            (s for s in _flatten_scenes(hlr.scenes) if s.scene_name == scene_mlr.scene_name),
+            None,
+        )
+        if hlr_scene:
+            scene_mlr.entities = [
+                build_entity_spec(schema, ename, penum, scene_mlr.scene_name)
+                for ename, penum in _entities_for_scene(hlr, hlr_scene)
+            ]
+
     print(f"  [{time.time()-t:.1f}s] {len(mlr_scenes)} scenes")
     for scene_mlr in mlr_scenes:
         fsm_states = len(scene_mlr.fsm.states) if scene_mlr.fsm else 0
@@ -114,7 +142,7 @@ async def main():
         interactions = len(scene_mlr.system_interactions)
         entities = len(scene_mlr.entities)
         actions = sum(len(e.action_sets) for e in scene_mlr.entities)
-        print(f"  {scene_mlr.scene_name}: fsm={fsm_states} states, {collisions} collisions, {interactions} interactions, {entities} entities, {actions} action_sets")
+        print(f"  {scene_mlr.scene_name}: fsm={fsm_states}, {collisions} collisions, {interactions} interactions(det), {entities} entities(det), {actions} action_sets")
     mlr_errors = validate_mlr(hlr, mlr_scenes)
     if mlr_errors:
         print(f"  {len(mlr_errors)} issue(s):")

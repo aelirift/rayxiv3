@@ -374,12 +374,16 @@ async def _build_scene_mlr(
     game_systems: list[str],
     interaction_prompts_by_system: dict[str, str] | None = None,
     entity_prompt: str = "",
+    fsm_only: bool = False,
 ) -> SceneMLR:
     """Build all MLR products for one scene. Parallelizes within the scene.
 
     Routes each call type through the CallerRouter:
       FSM / interactions → primary (Claude CLI)
       collisions / simple entities → fast (MiniMax)
+
+    If fsm_only=True, only generates FSM + collisions (interactions/entities
+    will be filled deterministically by caller).
     """
     scene_mlr = SceneMLR(scene.scene_name)
     sn = scene.scene_name
@@ -431,12 +435,13 @@ async def _build_scene_mlr(
         _log.info("MLR: %s/%s — %d properties, %d action_sets",
                    sn, entity_name, len(entity.properties), len(entity.action_sets))
 
-    # Build task list: collisions + all interactions + all entities
+    # Build task list
     tasks: list = [_do_collisions()]
-    for system in game_systems:
-        tasks.append(_do_interaction(system))
-    for entity_name, parent_enum in _entities_for_scene(hlr, scene):
-        tasks.append(_do_entity(entity_name, parent_enum))
+    if not fsm_only:
+        for system in game_systems:
+            tasks.append(_do_interaction(system))
+        for entity_name, parent_enum in _entities_for_scene(hlr, scene):
+            tasks.append(_do_entity(entity_name, parent_enum))
 
     # Run all in parallel
     await asyncio.gather(*tasks)
@@ -455,6 +460,7 @@ async def run_mlr(
     router: CallerRouter,
     knowledge_dir: Path | None = None,
     schema: object | None = None,
+    fsm_only: bool = False,
 ) -> list[SceneMLR]:
     kb = KnowledgeBase(knowledge_dir or _KNOWLEDGE_DIR)
     kb_context = kb.retrieve_context(hlr.game_name)
@@ -462,6 +468,9 @@ async def run_mlr(
         kb_context = kb.retrieve_context(hlr.genre)
 
     _log.info("MLR: KB sources = %s", kb_context.source_names)
+
+    game_systems = hlr.get_enum("game_systems")
+    base_context = _build_context(hlr, kb_context)
 
     # Format entity prompt with full property list (entities need all props)
     props_text = _build_allowed_properties_text(schema)
@@ -474,9 +483,6 @@ async def run_mlr(
         interaction_prompts_by_system[system] = INTERACTIONS_SYSTEM_PROMPT.replace(
             "{allowed_properties}", scoped_props,
         )
-
-    base_context = _build_context(hlr, kb_context)
-    game_systems = hlr.get_enum("game_systems")
     all_scenes = _flatten_scenes(hlr.scenes)
 
     # All scenes in parallel
@@ -486,6 +492,7 @@ async def run_mlr(
             scene, hlr, router, base_context, game_systems,
             interaction_prompts_by_system=interaction_prompts_by_system,
             entity_prompt=formatted_entity_prompt,
+            fsm_only=fsm_only,
         )
         for scene in all_scenes
     ]
