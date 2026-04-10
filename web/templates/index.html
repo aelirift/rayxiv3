@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayXI — Semantic Stack</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="shell">
+
+  <!-- ── Top bar ────────────────────────────────────────────────────── -->
+  <header id="topbar">
+    <h1>RayXI</h1>
+    <nav style="display:flex;gap:2px;margin-right:16px;">
+      <a href="/"     style="color:var(--accent);background:rgba(124,110,232,.12);text-decoration:none;font-size:12px;font-weight:600;padding:4px 10px;border-radius:5px;">Graph</a>
+      <a href="/chat" style="color:var(--muted);text-decoration:none;font-size:12px;font-weight:600;padding:4px 10px;border-radius:5px;">Chat</a>
+    </nav>
+
+    <label>Schema</label>
+    <select id="schema-select"></select>
+
+    <label>Initial state</label>
+    <input id="initial-state" type="text" placeholder="auto" style="width:110px">
+
+    <label>Drop %</label>
+    <input id="drop-prob" type="number" value="0.3" min="0" max="1" step="0.05" style="width:66px">
+
+    <label>Seed</label>
+    <input id="seed-input" type="number" placeholder="random" style="width:80px">
+
+    <button id="btn-run">Run</button>
+  </header>
+
+  <!-- ── Sidebar / filter panel ─────────────────────────────────────── -->
+  <aside id="sidebar">
+    <div id="source-section">
+      <label for="source-input">Python Source</label>
+      <textarea id="source-input" spellcheck="false"
+                placeholder="Paste Python functions here (optional)&#10;The FSM + simulation layers always render."></textarea>
+    </div>
+    <div id="sidebar-header">Layers</div>
+    <div id="filter-layers"></div>
+  </aside>
+
+  <!-- ── Graph canvas ───────────────────────────────────────────────── -->
+  <main id="canvas">
+    <div id="cy"></div>
+
+    <!-- Loading / error overlay -->
+    <div id="loading-overlay">
+      <div class="spinner"></div>
+      <span>Building graph…</span>
+    </div>
+
+    <!-- Canvas controls -->
+    <div id="canvas-overlay">
+      <button class="canvas-btn" onclick="fitGraph()" title="Fit to screen">⊞ Fit</button>
+      <button class="canvas-btn" onclick="resetLayout()" title="Reset positions">↺ Reset</button>
+    </div>
+  </main>
+
+  <!-- ── Detail panel ───────────────────────────────────────────────── -->
+  <aside id="detail">
+    <div id="detail-title">Select a node</div>
+    <div id="detail-body"></div>
+    <div id="detail-empty" style="color:var(--muted);font-size:12px;margin-top:8px">
+      Click any node or edge to inspect it.
+    </div>
+  </aside>
+
+  <!-- ── Status bar ─────────────────────────────────────────────────── -->
+  <footer id="statusbar">
+    <div class="stat">
+      <span class="stat-dot" style="background:var(--l1)"></span>
+      Functions: <span class="stat-val" id="stat-functions">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-dot" style="background:var(--l3)"></span>
+      States: <span class="stat-val" id="stat-states">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-dot" style="background:var(--l4)"></span>
+      Races: <span class="stat-val" id="stat-races">—</span>
+    </div>
+    <div class="stat" id="stat-deadlock">
+      <span class="stat-dot" style="background:var(--l5)"></span>
+      Sim: <span class="stat-val">—</span>
+    </div>
+    <div class="stat" style="margin-left:auto">
+      <span style="color:var(--muted)">schema:</span>
+      <span class="stat-val" id="stat-schema">—</span>
+      &nbsp;
+      <span style="color:var(--muted)">drop:</span>
+      <span class="stat-val" id="stat-drop">—</span>
+    </div>
+  </footer>
+
+</div>
+
+<!-- Cytoscape.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"
+        integrity="sha512-K5oT5GZf7n2P7HRFd3VW3hFNgvMGG0Q2jAXuDiNcFT1B6PQbMKBhHoaCj0mMgQ6pSqPP+Rf1yoTiJCiJ+L7w=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

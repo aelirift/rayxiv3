@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayXI — Agent Chat</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/chat.css">
+</head>
+<body>
+<div id="chat-shell">
+
+  <!-- ── Top bar ────────────────────────────────────────────────────── -->
+  <header id="topbar">
+    <h1>RayXI</h1>
+    <nav id="nav">
+      <a href="/" class="nav-link">Graph</a>
+      <a href="/chat" class="nav-link active">Chat</a>
+      <a href="/gallery" class="nav-link">Gallery</a>
+      <a href="/studio"  class="nav-link">Studio</a>
+    </nav>
+
+    <!-- Project selector -->
+    <div id="project-bar">
+      <label for="project-input">Project</label>
+      <div id="project-input-wrap">
+        <input
+          id="project-input"
+          type="text"
+          list="project-list"
+          placeholder="Select or type a new project name…"
+          autocomplete="off"
+        >
+        <datalist id="project-list"></datalist>
+      </div>
+      <span id="project-status"></span>
+    </div>
+  </header>
+
+  <!-- ── Main area ──────────────────────────────────────────────────── -->
+  <div id="chat-main">
+
+    <!-- ── Left: conversation history ──────────────────────────────── -->
+    <section id="chat-col">
+      <div id="chat-header">
+        <span id="chat-title">Conversation</span>
+        <span id="agent-badge"></span>
+      </div>
+      <div id="messages"></div>
+
+      <!-- Input bar lives here so it anchors to the left column -->
+      <footer id="input-bar">
+        <textarea
+          id="msg-input"
+          rows="1"
+          placeholder="Describe a game to create, or ask to fix / improve…"
+        ></textarea>
+        <button id="send-btn">Send</button>
+      </footer>
+    </section>
+
+    <!-- ── Right: activity feed + code viewer ──────────────────────── -->
+    <section id="right-col">
+
+      <!-- Activity feed (top half) -->
+      <div id="activity-panel">
+        <div id="activity-header">
+          <span id="activity-title">Activity</span>
+          <span id="activity-meta"></span>
+        </div>
+        <div id="activity-feed">
+          <div id="activity-empty">
+            <span>Agent activity will appear here as your game is created, fixed, or improved.</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Code panel hidden — not shown in chat view -->
+      <div id="code-panel" hidden>
+        <div id="code-header">
+          <span id="code-filename">game.py</span>
+          <div id="code-actions">
+            <button id="play-btn" title="Open in player" hidden>▶ Play</button>
+            <button id="copy-btn" title="Copy source">⧉</button>
+          </div>
+        </div>
+        <pre id="code-viewer"><code id="code-content"></code></pre>
+      </div>
+
+    </section>
+  </div>
+
+</div>
+<script src="/static/chat.js"></script>
+</body>
+</html>

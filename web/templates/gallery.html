@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayXI — Game Gallery</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1225; color: #ccc; font-family: Arial, sans-serif; min-height: 100vh; }
+
+    #topbar {
+      display: flex; align-items: center; gap: 20px;
+      padding: 12px 24px; background: #0a0520; border-bottom: 2px solid #333;
+    }
+    #topbar h1 { color: #dca61e; font-size: 22px; margin-right: 10px; }
+    .nav-link {
+      color: #888; text-decoration: none; font-size: 15px; padding: 4px 10px;
+      border-radius: 4px; transition: all 0.2s;
+    }
+    .nav-link:hover { color: #fff; background: #2a2040; }
+    .nav-link.active { color: #dca61e; background: #1e1535; }
+
+    #gallery-main { padding: 30px; }
+    #gallery-main h2 { color: #dca61e; margin-bottom: 20px; font-size: 20px; }
+
+    .game-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 20px;
+    }
+
+    .game-card {
+      background: #1e1535; border: 1px solid #333; border-radius: 10px;
+      overflow: hidden; transition: transform 0.2s, border-color 0.2s;
+    }
+    .game-card:hover { transform: translateY(-3px); border-color: #dca61e; }
+
+    .card-thumb {
+      width: 100%; height: 160px; background: #120e20;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 48px; color: #333; overflow: hidden;
+    }
+    .card-thumb img { width: 100%; height: 100%; object-fit: cover; }
+
+    .card-body { padding: 16px; }
+    .card-name { font-size: 18px; font-weight: bold; color: #eee; margin-bottom: 6px; }
+    .card-engine { font-size: 12px; color: #666; margin-bottom: 12px; }
+
+    .card-actions { display: flex; gap: 10px; }
+    .btn-play {
+      flex: 1; padding: 10px; background: #2a6; color: #fff; border: none;
+      border-radius: 6px; font-size: 15px; cursor: pointer; text-align: center;
+      text-decoration: none; display: block;
+    }
+    .btn-play:hover { background: #3b7; }
+
+    .btn-test {
+      padding: 10px; background: #26a; color: #fff; border: none;
+      border-radius: 6px; font-size: 15px; cursor: pointer; text-align: center;
+      text-decoration: none; display: block;
+    }
+    .btn-test:hover { background: #37b; }
+
+    .btn-log {
+      padding: 10px; background: #555; color: #fff; border: none;
+      border-radius: 6px; font-size: 15px; cursor: pointer; text-align: center;
+      text-decoration: none; display: block;
+    }
+    .btn-log:hover { background: #777; }
+
+    .empty-msg { color: #666; text-align: center; padding: 60px 20px; font-size: 16px; }
+    .empty-msg a { color: #dca61e; }
+  </style>
+</head>
+<body>
+
+<header id="topbar">
+  <h1>RayXI</h1>
+  <nav>
+    <a href="/"        class="nav-link">Graph</a>
+    <a href="/chat"    class="nav-link">Chat</a>
+    <a href="/gallery" class="nav-link active">Gallery</a>
+    <a href="/studio"  class="nav-link">Studio</a>
+  </nav>
+</header>
+
+<main id="gallery-main">
+  <h2>Game Gallery</h2>
+  <div class="game-grid" id="game-grid"></div>
+  <div class="empty-msg" id="empty-msg" style="display:none">
+    No games exported yet. <a href="/chat">Build one in Chat</a>.
+  </div>
+</main>
+
+<script>
+const grid = document.getElementById('game-grid');
+const emptyMsg = document.getElementById('empty-msg');
+
+(async function load() {
+  try {
+    const res = await fetch('/api/gallery/games');
+    const data = await res.json();
+    const games = data.games || [];
+
+    if (games.length === 0) {
+      emptyMsg.style.display = '';
+      return;
+    }
+
+    for (const game of games) {
+      const card = document.createElement('div');
+      card.className = 'game-card';
+
+      const displayName = game.name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      const engineLabel = game.engine === 'godot' ? 'Godot 4.4 (WebGL)' : 'Pygame (Streamed)';
+
+      card.innerHTML = `
+        <div class="card-thumb">${game.thumb ? `<img src="${game.thumb}">` : '🎮'}</div>
+        <div class="card-body">
+          <div class="card-name">${displayName}</div>
+          <div class="card-engine">${engineLabel}</div>
+          <div class="card-actions">
+            <a class="btn-play" href="${game.url}" target="_blank">▶ Play</a>
+            ${game.test_url ? `<a class="btn-test" href="${game.test_url}" target="_blank">🧪 Test</a>` : ''}
+            ${game.log_url ? `<a class="btn-log" href="${game.log_url}" target="_blank">📋 Log</a>` : ''}
+          </div>
+        </div>
+      `;
+      grid.appendChild(card);
+    }
+  } catch(e) {
+    console.error('Gallery load failed', e);
+    emptyMsg.style.display = '';
+    emptyMsg.textContent = 'Failed to load games: ' + e;
+  }
+})();
+</script>
+</body>
+</html>

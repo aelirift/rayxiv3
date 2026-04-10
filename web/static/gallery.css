@@ -1,0 +1,262 @@
+/* ── Gallery shell ──────────────────────────────────────────────────── */
+#gallery-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Override the grid-area: topbar from style.css so it behaves as a flex child */
+#topbar {
+  grid-area: unset;
+  flex: 0 0 44px;
+  gap: 12px;
+}
+
+/* Nav links (defined in chat.css but needed here too) */
+#nav { display: flex; gap: 2px; margin-right: 20px; }
+.nav-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 5px;
+  transition: color .15s, background .15s;
+}
+.nav-link:hover  { color: var(--text); background: rgba(255,255,255,.05); }
+.nav-link.active { color: var(--accent); background: rgba(124,110,232,.12); }
+#gallery-count {
+  margin-left: auto;
+  margin-right: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.top-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 5px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.top-btn:hover { color: var(--text); border-color: var(--accent); }
+
+/* ── Scrollable game grid ───────────────────────────────────────────── */
+#gallery-main {
+  flex: 1 1 0;          /* fill all remaining height */
+  min-height: 0;        /* allow flex child to shrink below content size */
+  overflow-y: auto;
+  padding: 28px 32px;
+  background: var(--bg);
+}
+
+#game-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+#gallery-empty {
+  text-align: center;
+  padding: 100px 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 2;
+}
+#gallery-empty a { color: var(--accent); text-decoration: none; }
+#gallery-empty a:hover { text-decoration: underline; }
+
+/* ── Game card ──────────────────────────────────────────────────────── */
+.game-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.game-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 4px 24px rgba(124,110,232,.12);
+}
+
+.card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.card-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: .02em;
+  line-height: 1.3;
+  flex: 1;
+}
+
+.card-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+  letter-spacing: .05em;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.card-badge.pass    { background: rgba(74,222,128,.15);  color: var(--l1); }
+.card-badge.fail    { background: rgba(248,113,113,.15); color: var(--l4); }
+.card-badge.unknown { background: rgba(255,255,255,.06); color: var(--muted); }
+
+.card-meta {
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  gap: 12px;
+}
+
+/* ── Card action buttons ────────────────────────────────────────────── */
+.card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.btn-play {
+  flex: 1;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 0;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  letter-spacing: .03em;
+  transition: opacity .15s, transform .1s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.btn-play:hover   { opacity: .88; }
+.btn-play:active  { transform: scale(.97); }
+.btn-play.loading { opacity: .6; cursor: default; }
+
+.btn-code {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+  white-space: nowrap;
+}
+.btn-code:hover { color: var(--text); border-color: var(--accent); }
+
+/* ── Launch toast ───────────────────────────────────────────────────── */
+#launch-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: 0 4px 20px rgba(0,0,0,.4);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s;
+  z-index: 200;
+  max-width: 480px;
+  text-align: center;
+}
+#launch-toast.show { opacity: 1; }
+#launch-toast.ok   { border-color: var(--l1); color: var(--l1); }
+#launch-toast.err  { border-color: var(--l4); color: var(--l4); }
+
+/* ── Code modal ─────────────────────────────────────────────────────── */
+#code-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+#code-modal-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  width: min(1000px, 94vw);
+  height: min(86vh, 860px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#code-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+#code-modal-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+#code-modal-actions button {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+#code-modal-actions button:hover { color: var(--text); border-color: var(--accent); }
+#code-close-btn { border-color: transparent; font-size: 16px; padding: 4px 8px; }
+
+#code-modal-meta {
+  padding: 8px 18px;
+  font-size: 11px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+#code-modal-pre {
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+  padding: 16px 18px;
+}
+#code-modal-content {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--text);
+  white-space: pre;
+}

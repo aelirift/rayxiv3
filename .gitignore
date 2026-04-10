@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .env
 logs/
+.cache/
+.trace/
+output/
+games/*/export/
+test_*.py

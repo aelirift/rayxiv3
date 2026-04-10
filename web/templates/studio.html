@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayXI — Sprite Studio</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1225; color: #ccc; font-family: Arial, sans-serif; height: 100vh; overflow: hidden; }
+
+    .split { display: flex; height: 100vh; }
+
+    /* Left: game panel */
+    .game-panel {
+      width: 50%; border-right: 2px solid #333;
+      display: flex; flex-direction: column;
+    }
+    .game-panel h2 {
+      padding: 12px 20px; background: #0a0520cc; color: #dca61e; font-size: 20px;
+    }
+    .game-panel .controls {
+      padding: 10px 20px; background: #0a0520aa; font-size: 14px; color: #999;
+    }
+    .game-panel .controls kbd {
+      background: #333; color: #eee; padding: 2px 6px; border-radius: 3px; font-size: 13px;
+    }
+    .game-info {
+      flex: 1; padding: 20px; overflow-y: auto;
+    }
+    .game-info .launch-btn {
+      background: #2a6; color: #fff; border: none; padding: 12px 24px;
+      font-size: 16px; border-radius: 6px; cursor: pointer; margin: 10px 0;
+    }
+    .game-info .launch-btn:hover { background: #3b7; }
+    .frame-grid {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 15px;
+    }
+    .frame-grid img {
+      height: 120px; background: #222; border: 1px solid #444; border-radius: 4px;
+    }
+
+    /* Right: upload panel */
+    .upload-panel {
+      width: 50%; display: flex; flex-direction: column;
+    }
+    .upload-panel h2 {
+      padding: 12px 20px; background: #0a0520cc; color: #dca61e; font-size: 20px;
+    }
+
+    .drop-zone {
+      flex: 1; margin: 20px; border: 3px dashed #555; border-radius: 12px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      cursor: pointer; transition: border-color 0.2s;
+      position: relative; overflow: hidden;
+    }
+    .drop-zone.dragover { border-color: #dca61e; background: #1e152fcc; }
+    .drop-zone p { color: #888; font-size: 16px; margin: 8px; }
+    .drop-zone .hint { color: #666; font-size: 13px; }
+    .drop-zone input[type=file] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer;
+    }
+
+    .preview-area {
+      flex: 1; margin: 20px; display: none; flex-direction: column;
+    }
+    .preview-area img {
+      max-width: 100%; max-height: 60vh; object-fit: contain;
+      border: 1px solid #444; border-radius: 6px; background: #222;
+    }
+    .preview-meta {
+      padding: 10px 0; color: #999; font-size: 14px;
+    }
+    .preview-actions {
+      display: flex; gap: 10px; margin-top: 10px;
+    }
+    .preview-actions button {
+      padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;
+    }
+    .btn-save { background: #2a6; color: #fff; }
+    .btn-save:hover { background: #3b7; }
+    .btn-clear { background: #555; color: #fff; }
+    .btn-clear:hover { background: #666; }
+    .btn-paste { background: #2568b0; color: #fff; }
+    .btn-paste:hover { background: #3079c1; }
+
+    .status { padding: 8px 20px; background: #111; color: #6b6; font-size: 13px; min-height: 30px; }
+  </style>
+</head>
+<body>
+<div class="split">
+
+  <!-- Left: Game Panel -->
+  <div class="game-panel">
+    <h2>
+      <select id="game-select" style="background:#1a1225;color:#dca61e;border:1px solid #555;padding:4px 8px;font-size:18px;border-radius:4px;">
+      </select>
+      Assets
+    </h2>
+    <div class="controls">
+      <button class="launch-btn" id="launch-btn" style="margin:0;padding:6px 16px;font-size:14px;">&#9654; Launch</button>
+    </div>
+    <div class="game-info">
+      <button class="launch-btn" id="launch-btn">▶ Launch Game</button>
+      <p style="margin-top:15px; color:#888;">Current sprite frames:</p>
+      <div class="frame-grid" id="frame-grid"></div>
+    </div>
+  </div>
+
+  <!-- Right: Upload Panel -->
+  <div class="upload-panel">
+    <h2>Sprite Upload</h2>
+
+    <div style="padding: 10px 20px;">
+      <button class="btn-paste" id="paste-btn">📋 Paste from Clipboard (Ctrl+V)</button>
+    </div>
+
+    <div class="drop-zone" id="drop-zone">
+      <p>Drop image here</p>
+      <p class="hint">or click to browse</p>
+      <input type="file" id="file-input" accept="image/*">
+    </div>
+
+    <div class="preview-area" id="preview-area">
+      <img id="preview-img">
+      <div class="preview-meta" id="preview-meta"></div>
+      <div class="preview-actions">
+        <button class="btn-save" id="save-btn">Save to Assets</button>
+        <button class="btn-clear" id="clear-btn">Clear</button>
+      </div>
+    </div>
+
+    <div class="status" id="status"></div>
+  </div>
+
+</div>
+
+<script>
+const dropZone    = document.getElementById('drop-zone');
+const fileInput   = document.getElementById('file-input');
+const previewArea = document.getElementById('preview-area');
+const previewImg  = document.getElementById('preview-img');
+const previewMeta = document.getElementById('preview-meta');
+const saveBtn     = document.getElementById('save-btn');
+const clearBtn    = document.getElementById('clear-btn');
+const pasteBtn    = document.getElementById('paste-btn');
+const statusEl    = document.getElementById('status');
+const frameGrid   = document.getElementById('frame-grid');
+const launchBtn   = document.getElementById('launch-btn');
+const gameSelect  = document.getElementById('game-select');
+
+let currentFile = null;
+let currentGame = 'chun_li_demo';
+
+// Load game list + frames
+(async function init() {
+  try {
+    const res = await fetch('/api/studio/games');
+    const data = await res.json();
+    gameSelect.innerHTML = '';
+    for (const g of data.games) {
+      const opt = document.createElement('option');
+      opt.value = g;
+      opt.textContent = g.replace(/_/g, ' ');
+      gameSelect.appendChild(opt);
+    }
+    // Default to mario_kart_mode7 if available, else first
+    const mk = data.games.find(g => g.includes('mario_kart'));
+    if (mk) { gameSelect.value = mk; currentGame = mk; }
+    else if (data.games.length) { currentGame = data.games[0]; gameSelect.value = currentGame; }
+    await loadFrames();
+  } catch(e) { console.error(e); }
+})();
+
+gameSelect.addEventListener('change', () => {
+  currentGame = gameSelect.value;
+  loadFrames();
+});
+
+// Launch game
+launchBtn.addEventListener('click', async () => {
+  statusEl.textContent = 'Launching ' + currentGame + '...';
+  try {
+    await fetch(`/api/games/${encodeURIComponent(currentGame)}/launch`, { method: 'POST' });
+    statusEl.textContent = 'Game launched!';
+  } catch(e) { statusEl.textContent = 'Launch failed: ' + e; }
+});
+
+// Drag and drop
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) showFile(e.dataTransfer.files[0]);
+});
+
+// File picker
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) showFile(fileInput.files[0]);
+});
+
+// Paste from clipboard
+document.addEventListener('paste', handlePaste);
+pasteBtn.addEventListener('click', async () => {
+  try {
+    const items = await navigator.clipboard.read();
+    for (const item of items) {
+      for (const type of item.types) {
+        if (type.startsWith('image/')) {
+          const blob = await item.getType(type);
+          const file = new File([blob], 'pasted.png', { type });
+          showFile(file);
+          return;
+        }
+      }
+    }
+    statusEl.textContent = 'No image in clipboard';
+  } catch(e) {
+    statusEl.textContent = 'Clipboard access denied — try Ctrl+V instead';
+  }
+});
+
+function handlePaste(e) {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (file) showFile(file);
+      return;
+    }
+  }
+}
+
+function showFile(file) {
+  currentFile = file;
+  const url = URL.createObjectURL(file);
+  previewImg.src = url;
+  previewMeta.textContent = `${file.name} — ${(file.size / 1024).toFixed(1)} KB`;
+  dropZone.style.display = 'none';
+  previewArea.style.display = 'flex';
+  statusEl.textContent = '';
+}
+
+clearBtn.addEventListener('click', () => {
+  currentFile = null;
+  previewImg.src = '';
+  dropZone.style.display = 'flex';
+  previewArea.style.display = 'none';
+  statusEl.textContent = '';
+});
+
+saveBtn.addEventListener('click', async () => {
+  if (!currentFile) return;
+  const name = prompt('Save as (filename without extension):', 'reference');
+  if (!name) return;
+
+  const formData = new FormData();
+  formData.append('file', currentFile);
+  formData.append('name', name);
+  formData.append('game', currentGame);
+
+  try {
+    const res = await fetch('/api/studio/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    statusEl.textContent = data.message || 'Saved!';
+    // Reload frames
+    loadFrames();
+  } catch(e) {
+    statusEl.textContent = 'Upload failed: ' + e;
+  }
+});
+
+async function loadFrames() {
+  try {
+    const res = await fetch(`/api/studio/frames?game=${encodeURIComponent(currentGame)}`);
+    const data = await res.json();
+    frameGrid.innerHTML = '';
+    for (const f of data.frames) {
+      const img = document.createElement('img');
+      img.src = `/api/studio/frame/${f}?game=${encodeURIComponent(currentGame)}`;
+      img.title = f;
+      frameGrid.appendChild(img);
+    }
+  } catch(e) { console.error(e); }
+}
+</script>
+</body>
+</html>
