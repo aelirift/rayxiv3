@@ -42,6 +42,7 @@ class PropertySpec:
     formula: str = ""   # for derived: computation formula
     written_by: list[str] = field(default_factory=list)
     read_by: list[str] = field(default_factory=list)
+    write_verb: str = ""  # how the system writes this property: subtract, set, set_state, increment, etc.
     purpose: str = ""
     source_mechanic: str = ""  # which mechanic contributed this
 
@@ -110,6 +111,7 @@ def _expand_properties(
             formula=p.get("formula", ""),
             written_by=p.get("written_by", []) if isinstance(p.get("written_by"), list) else [p.get("written_by", "")],
             read_by=p.get("read_by", []) if isinstance(p.get("read_by"), list) else [p.get("read_by", "")],
+            write_verb=p.get("write_verb", ""),
             purpose=p.get("purpose", ""),
             source_mechanic=mechanic_name,
         ))
@@ -134,6 +136,7 @@ def _expand_templated_attacks(
                 category="config",
                 scope="role_generic",
                 default=str(prop_def.get("default", "")),
+                write_verb=prop_def.get("write_verb", ""),
                 purpose=f"{attack}: {prop_def.get('purpose', '')}",
                 source_mechanic=mechanic_name,
             ))
@@ -160,6 +163,7 @@ def _expand_special_moves(
                 category="config",
                 scope="instance_unique",
                 default=str(prop_def.get("default", "")),
+                write_verb=prop_def.get("write_verb", ""),
                 purpose=f"{character_name}.{move}: {prop_def.get('purpose', '')}",
                 source_mechanic=mechanic_name,
             ))

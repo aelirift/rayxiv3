@@ -1,10 +1,19 @@
 """LLM callers for RayXI v3.
 
-Claude CLI is the default for complex calls.
-MiniMax handles simple/mechanical calls (collisions, simple entities).
-Fallback order: Claude CLI → MiniMax → Kimi → GLM.
+Provider priority is explicit and named:
+    primary:   Kimi      (long-form codegen + spec reasoning)
+    secondary: MiniMax   (simple/mechanical calls, fast fallback)
+    tertiary:  GLM       (last resort; rate-limited)
 
-CallerRouter maps call_type labels to the right caller.
+Claude CLI is NOT part of the pipeline. It was removed because:
+- The pipeline runs via subprocess in a restricted environment where spawning
+  a CLI is brittle, and
+- Every pipeline call should be first-party API traffic so we can reason about
+  rate limits, caching, and cost.
+
+CallerRouter maps call_type labels to the right caller. Simple calls (HUD,
+collision, background) route to the secondary (MiniMax); everything else
+goes to the primary (Kimi).
 """
 
 from __future__ import annotations
@@ -13,7 +22,6 @@ import asyncio
 import json
 import logging
 import re
-import shutil
 import time
 import urllib.parse
 import urllib.request
@@ -169,43 +177,6 @@ class KimiCaller:
         return data["choices"][0]["message"]["content"]
 
 
-class ClaudeCLICaller:
-    """Claude Code CLI via `claude --print` subprocess. No conversation context."""
-
-    async def __call__(self, system: str, prompt: str, *, json_mode: bool = False, label: str = "") -> str:
-        full_prompt = f"{system}\n\n---\n\n{prompt}"
-        if json_mode:
-            full_prompt += "\n\nIMPORTANT: Respond with ONLY a valid JSON object. No markdown fences, no explanation, no text before or after the JSON."
-
-        slot_label = f"ClaudeCLI/{label}" if label else "ClaudeCLI"
-        _log.info("%s: sending %d chars", slot_label, len(full_prompt))
-
-        async with PoolSlot(get_pool(), slot_label):
-            proc = await asyncio.create_subprocess_exec(
-                "claude", "--print", "--output-format", "text",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate(full_prompt.encode())
-
-        if proc.returncode != 0:
-            err = stderr.decode()[:300]
-            raise RuntimeError(f"Claude CLI error (exit {proc.returncode}): {err}")
-
-        text = stdout.decode().strip()
-        if not text:
-            raise RuntimeError("Claude CLI empty response")
-
-        # Strip markdown fences if present
-        fence_match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, flags=re.DOTALL)
-        if fence_match:
-            text = fence_match.group(1).strip()
-
-        _log.info("%s: got %d chars back", slot_label, len(text))
-        return text
-
-
 class FallbackCaller:
     def __init__(self, callers: list) -> None:
         self._callers = callers
@@ -288,45 +259,58 @@ class CallerRouter:
         return self._fast
 
 
+# Named priority list — used by both build_callers and build_router so the
+# "primary → secondary → tertiary" order is declared in exactly one place.
+PROVIDER_PRIORITY = [
+    ("primary",   "kimi"),
+    ("secondary", "minimax"),
+    ("tertiary",  "glm"),
+]
+
+
 def build_callers() -> dict[str, LLMCaller]:
-    """Build callers. Claude CLI is default. Fallback: Claude → MiniMax → Kimi → GLM."""
+    """Construct the LLM caller set for the pipeline.
+
+    Returns a dict keyed by provider name ("kimi", "minimax", "glm") plus a
+    "default" fallback chain that iterates them in PROVIDER_PRIORITY order.
+    Claude CLI is intentionally omitted — see module docstring.
+    """
     cfg = _load_config()
     providers = cfg.get("providers", {})
     callers: dict[str, LLMCaller] = {}
 
-    # Claude CLI — default if available
-    if shutil.which("claude"):
-        callers["claude"] = ClaudeCLICaller()
-
-    if "minimax" in providers:
-        callers["minimax"] = MiniMaxCaller(providers["minimax"])
     if _KIMI_CRED_PATH.exists():
         callers["kimi"] = KimiCaller()
+    if "minimax" in providers:
+        callers["minimax"] = MiniMaxCaller(providers["minimax"])
     if "glm" in providers:
         callers["glm"] = GlmCaller(providers["glm"])
 
-    # Fallback chain: Claude → MiniMax → Kimi → GLM
-    chain = [c for k in ("claude", "minimax", "kimi", "glm") if (c := callers.get(k)) is not None]
-    if len(chain) > 1:
-        callers["default"] = FallbackCaller(chain)
-    elif chain:
-        callers["default"] = chain[0]
-
+    # Build the fallback chain in declared priority order.
+    chain = [callers[name] for _, name in PROVIDER_PRIORITY if name in callers]
+    if not chain:
+        raise RuntimeError(
+            "No LLM providers available. Configure at least one of: "
+            + ", ".join(name for _, name in PROVIDER_PRIORITY)
+        )
+    callers["default"] = FallbackCaller(chain) if len(chain) > 1 else chain[0]
     return callers
 
 
 def build_router(callers: dict[str, LLMCaller]) -> CallerRouter:
     """Build a CallerRouter from the callers dict.
 
-    primary = claude or default
-    fast = minimax (if available)
+    primary   = PROVIDER_PRIORITY[0] (kimi) — all complex codegen + spec calls
+    secondary = PROVIDER_PRIORITY[1] (minimax) — simple/fast calls (collisions, HUD)
     """
-    primary = callers.get("claude") or callers["default"]
-    fast = callers.get("minimax")
+    primary_name = PROVIDER_PRIORITY[0][1]
+    secondary_name = PROVIDER_PRIORITY[1][1]
+    primary = callers.get(primary_name) or callers["default"]
+    fast = callers.get(secondary_name)
     router = CallerRouter(primary, fast)
     _log.info(
-        "Router: primary=%s, fast=%s",
-        type(primary).__name__,
-        type(fast).__name__ if fast else "None (all calls → primary)",
+        "Router: primary=%s (%s), secondary=%s (%s)",
+        primary_name, type(primary).__name__,
+        secondary_name, type(fast).__name__ if fast else "missing → primary",
     )
     return router

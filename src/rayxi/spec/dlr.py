@@ -144,6 +144,42 @@ Rules:
 - Output ONLY the JSON. No markdown, no explanation.
 """
 
+MECHANIC_CONSTANTS_SYSTEM_PROMPT = """\
+You are a game balance engineer. Your job is to fill in concrete numeric values for \
+the constants that drive a custom (non-template) game mechanic.
+
+You will receive:
+1. The full mechanic spec (summary, properties, hud_entities, interactions, constants_for_dlr)
+2. The HLR game context (game_name, genre, global_rules, relevant enums)
+3. KB game data for the genre (frame data, balance values, colors)
+
+For EVERY constant listed in constants_for_dlr, provide a concrete value consistent \
+with the game's balance and the mechanic's intent.
+
+Output a JSON object:
+{
+  "system_name": "string — must match the mechanic_spec system_name",
+  "constants": [
+    {
+      "name": "string — must match one constant_for_dlr.name",
+      "type": "string — int, float, bool, string, hex_color, or Vector2",
+      "value": "string — the actual concrete value (e.g. '3', '0.25', '1.75', '#ff4400', '20')",
+      "unit": "string — hp, frames, pixels, ratio, hex, or empty",
+      "rationale": "string — one sentence explaining why this value balances the mechanic"
+    }
+  ]
+}
+
+Rules:
+- EVERY constant from the mechanic_spec.constants_for_dlr list MUST appear in output.constants.
+- Use the value_hint in each constant_for_dlr as a starting point, refine with KB data where applicable.
+- Numeric constants: match the game's balance (e.g. fighting game health ~1000, frames at 60fps).
+- For color constants, use hex codes like "#ff4400".
+- The constant names in your output MUST match the spec exactly — do not rename or abbreviate.
+- Output ONLY the JSON object. No markdown, no explanation.
+"""
+
+
 INTERACTION_DETAIL_SYSTEM_PROMPT = """\
 You are a game implementation architect. Your job is to fill in ALL actual values \
 for interactions within ONE game system in ONE scene.
@@ -317,6 +353,54 @@ async def _build_scene_dlr(
 # ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
+
+async def fill_mechanic_constants(
+    hlr: GameIdentity,
+    router: CallerRouter,
+    kb_game_data_text: str = "{}",
+) -> dict:
+    """Fill concrete values for every mechanic_spec's constants_for_dlr list.
+
+    Returns a dict keyed by system_name:
+        {"rage_meter_system": {"constants": [{name, type, value, unit, rationale}, ...]}}
+    One LLM call per mechanic_spec. Missing constants from a mechanic_spec are an error.
+    """
+    if not hlr.mechanic_specs:
+        return {}
+
+    hlr_ctx = json.dumps({
+        "game_name": hlr.game_name,
+        "genre": hlr.genre,
+        "player_mode": hlr.player_mode,
+        "global_rules": hlr.global_rules,
+        "enums": {e.name: e.values for e in hlr.enums},
+    }, indent=2)
+
+    results: dict = {}
+    caller = router.get("dlr_interactions")
+
+    async def _fill(spec) -> None:
+        spec_json = json.dumps(spec.model_dump(), indent=2)
+        prompt = (
+            f"## HLR\n```json\n{hlr_ctx}\n```\n\n"
+            f"## KB Game Data\n```json\n{kb_game_data_text}\n```\n\n"
+            f"## Mechanic Spec\n```json\n{spec_json}\n```"
+        )
+        label = f"dlr_mechanic_constants[{spec.system_name}]"
+        raw = await _call_llm(caller, MECHANIC_CONSTANTS_SYSTEM_PROMPT, prompt, label)
+        parsed = json.loads(raw)
+        results[spec.system_name] = parsed
+        filled = {c["name"] for c in parsed.get("constants", [])}
+        required = {c.name for c in spec.constants_for_dlr}
+        missing = required - filled
+        if missing:
+            _log.warning("DLR: %s — missing constants: %s", spec.system_name, missing)
+        _log.info("DLR: %s — %d/%d constants filled",
+                  spec.system_name, len(filled & required), len(required))
+
+    await asyncio.gather(*[_fill(m) for m in hlr.mechanic_specs])
+    return results
+
 
 async def run_dlr(
     hlr: GameIdentity,

@@ -1,0 +1,1489 @@
+{
+  "_meta": {
+    "genre": "2d_fighter",
+    "description": "Mechanic templates for 2D fighting games. Each mechanic defines what properties it contributes to each role. The union of all mechanics = the complete role schema.",
+    "property_categories": {
+      "config": "Set at game start, never changes at runtime. DLR fills value. @export var in Godot.",
+      "state": "Changes at runtime. DLR fills INITIAL value. var in Godot. Must specify written_by system.",
+      "derived": "Computed from other properties. Never stored. Build generates getter. Must specify formula."
+    },
+    "scope_rules": {
+      "role_generic": "Same property structure for ALL instances of this role. Traced once.",
+      "instance_unique": "Per-instance. Special moves, character-specific values."
+    }
+  },
+  "high_level": {
+    "roles": {
+      "fighter": {
+        "description": "Any playable or CPU-controlled character in a fighting game",
+        "godot_base_node": "CharacterBody2D",
+        "sub_roles": [
+          "playable_fighter",
+          "cpu_fighter"
+        ]
+      },
+      "projectile": {
+        "description": "Spawned ranged attack that travels independently",
+        "godot_base_node": "Area2D"
+      },
+      "hud_bar": {
+        "description": "Bar display (health, stun, super meter)",
+        "godot_base_node": "ProgressBar"
+      },
+      "hud_text": {
+        "description": "Text display (timer, round counter, labels)",
+        "godot_base_node": "Label"
+      },
+      "stage": {
+        "description": "Background arena",
+        "godot_base_node": "Sprite2D"
+      }
+    },
+    "systems": {
+      "health_system": {
+        "description": "Tracks fighter HP. Objects: fighter, hud_bar. Interactions: combat_system subtracts damage from current_health on hit, round_system reads is_ko to detect round end, hud_bar reads health_percent for fill display. Effects: subtract current_health, set is_ko when health reaches zero, update display_value on hud_bar.",
+        "scope": "role_generic"
+      },
+      "combat_system": {
+        "description": "Hit detection, damage calculation, hitstop freeze, pushback. Objects: fighter, projectile, hitbox, hurtbox. Interactions: reads action_frame and current_action to determine active hitboxes, checks hit_this_frame against opponent hurtbox, applies damage and hitstun, triggers hitstop freeze on both attacker and defender. Effects: subtract current_health, set hitstop_timer and hitstun_timer, apply pushback_velocity.",
+        "scope": "role_generic"
+      },
+      "movement_system": {
+        "description": "Walking, jumping, crouching, facing direction, gravity. Objects: fighter, stage. Interactions: reads input direction to determine walk/jump/crouch, physics_system applies gravity and updates position, clamps to stage bounds, always faces opponent for forward/back determination. Effects: set position, set velocity, set facing_direction, set is_airborne, set is_crouching.",
+        "scope": "role_generic"
+      },
+      "blocking_system": {
+        "description": "Stand block, crouch block, chip damage, blockstun. Objects: fighter. Interactions: detects holding back away from opponent, distinguishes stand vs crouch block, combat_system applies reduced (chip) damage when blocking, sets blockstun_timer on block. Effects: set is_blocking, set block_type, set blockstun_timer, apply chip_damage_multiplier.",
+        "scope": "role_generic"
+      },
+      "stun_system": {
+        "description": "Stun meter accumulation, dizzy state, stun recovery. Objects: fighter. Interactions: increments stun_meter on each hit, when meter exceeds threshold sets is_stunned, stun_timer counts down dizzy duration, input_system blocks input while stunned. Effects: increment stun_meter, set is_stunned when threshold exceeded, set stun_timer.",
+        "scope": "role_generic"
+      },
+      "combo_system": {
+        "description": "Hit counting, damage scaling, juggle tracking. Objects: fighter. Interactions: increments combo_count on consecutive hits before recovery, scales combo_damage_scaling down per hit in combo, tracks juggle_count for airborne hits. Effects: increment combo_count, set combo_damage_scaling, increment juggle_count.",
+        "scope": "role_generic"
+      },
+      "projectile_system": {
+        "description": "Projectile spawning, travel, collision, despawn. Objects: fighter, projectile. Interactions: spawns projectile from fighter on special move input, tracks projectile_on_screen count limited by projectile_limit, collision_system detects projectile vs fighter hurtbox, despawns on hit or lifetime expiry. Effects: spawn projectile, increment projectile_on_screen, set is_firing_projectile, set owner_id, set active, increment frames_alive.",
+        "scope": "role_generic"
+      },
+      "input_system": {
+        "description": "Input buffering, motion detection, action mapping. Objects: fighter, button. Interactions: reads keyboard or controller buttons, buffers last 20 directional inputs, detects motion patterns like quarter-circle-forward for special moves, maps button presses to current_action, blocked during hitstop and hitstun. Effects: set input_buffer, set current_action, increment action_frame.",
+        "scope": "role_generic"
+      },
+      "animation_system": {
+        "description": "State-to-animation mapping, frame timing, sprite management. Objects: fighter, sprite. Interactions: reads current_action and current_health to pick animation, advances animation_frame each tick, flips sprite_flip_h based on facing_direction, displays hit reactions, blocks, KO animations. Effects: set current_animation, increment animation_frame, set sprite_flip_h.",
+        "scope": "role_generic"
+      },
+      "round_system": {
+        "description": "Round management, timer countdown, win tracking, scene transitions. Objects: game, fighter, hud_text. Interactions: counts down round_timer_frames each tick, reads is_ko to detect KO, compares health on time-up to determine winner, increments round_wins, transitions between pre_round, fighting, ko, time_up, round_over states. Effects: set round_timer_frames, set round_state, increment round_wins, increment current_round.",
+        "scope": "role_generic"
+      },
+      "charge_system": {
+        "description": "Charge input tracking for charge-type special moves. Objects: fighter. Interactions: detects holding back or down direction, accumulates charge_frames, sets charge_ready when duration reached, releases on opposite direction + button. Effects: set charge_direction, increment charge_frames, set charge_ready.",
+        "scope": "role_generic"
+      },
+      "special_move_system": {
+        "description": "Special move detection, execution, cooldowns. Objects: fighter, projectile. Instance-unique per character. Interactions: reads input_buffer for motion patterns (qcf, qcb, dp, charge), checks special_cooldown_timer, executes special move with startup/active/recovery frames, spawns projectile if move is_projectile. Effects: set current_action, set special_cooldown_timer, spawn projectile.",
+        "scope": "instance_unique"
+      },
+      "ai_system": {
+        "description": "CPU opponent decision making. Objects: fighter. Interactions: reads opponent position and current_action, decides walk/attack/block/jump based on ai_aggression and ai_difficulty, delays reactions by ai_reaction_frames to feel human. Effects: set ai_decision_timer, set ai_current_plan, set current_action.",
+        "scope": "role_generic"
+      },
+      "collision_system": {
+        "description": "Hitbox/hurtbox overlap detection, push-out. Objects: fighter, projectile, hitbox, hurtbox. Interactions: checks active_hitbox of attacker against hurtbox of defender, uses stand_hurtbox/crouch_hurtbox/air_hurtbox based on fighter state, pushes fighters apart on overlap to prevent intersection. Effects: set hit_this_frame, set active_hitbox, set position (push-out).",
+        "scope": "role_generic"
+      }
+    }
+  },
+  "mid_level": {
+    "system_properties": {
+      "health_system": {
+        "fighter": {
+          "config": [
+            {
+              "name": "max_health",
+              "type": "int",
+              "purpose": "Maximum HP at round start"
+            },
+            {
+              "name": "damage_reduction",
+              "type": "float",
+              "purpose": "Damage multiplier reduction (0.0 = normal, 0.3 = takes 30% less)"
+            }
+          ],
+          "state": [
+            {
+              "name": "current_health",
+              "type": "int",
+              "purpose": "Current HP",
+              "written_by": "combat_system",
+              "read_by": [
+                "combat_system",
+                "round_system",
+                "animation_system"
+              ],
+              "write_verb": "subtract"
+            },
+            {
+              "name": "is_ko",
+              "type": "bool",
+              "purpose": "True when health <= 0",
+              "written_by": "combat_system",
+              "read_by": [
+                "round_system"
+              ],
+              "write_verb": "set"
+            }
+          ],
+          "derived": [
+            {
+              "name": "health_percent",
+              "type": "float",
+              "purpose": "For health bar display",
+              "read_by": [
+                "hud_bar"
+              ]
+            }
+          ]
+        },
+        "game": {
+          "config": [
+            {
+              "name": "round_time_seconds",
+              "type": "int",
+              "purpose": "Round timer start value"
+            }
+          ],
+          "state": [],
+          "derived": []
+        },
+        "hud_bar": {
+          "config": [
+            {
+              "name": "target_property",
+              "type": "string",
+              "purpose": "Which fighter.property this bar displays (e.g. 'current_health')"
+            },
+            {
+              "name": "max_property",
+              "type": "string",
+              "purpose": "Which fighter.property is the max (e.g. 'max_health')"
+            }
+          ],
+          "state": [
+            {
+              "name": "display_value",
+              "type": "float",
+              "purpose": "Current bar fill (0.0 to 1.0)",
+              "written_by": "health_system",
+              "read_by": [
+                "animation_system"
+              ],
+              "write_verb": "set"
+            }
+          ],
+          "derived": []
+        }
+      },
+      "combat_system": {
+        "fighter": {
+          "config": [
+            {
+              "name": "throw_range",
+              "type": "float",
+              "purpose": "Pixel range for throw"
+            },
+            {
+              "name": "throw_damage",
+              "type": "int",
+              "purpose": "Throw damage"
+            }
+          ],
+          "state": [
+            {
+              "name": "hitstop_timer",
+              "type": "int",
+              "purpose": "Frames remaining in hitstop freeze",
+              "written_by": "combat_system",
+              "read_by": [
+                "combat_system",
+                "input_system",
+                "physics_system",
+                "animation_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "hitstun_timer",
+              "type": "int",
+              "purpose": "Frames remaining in hitstun (cannot act)",
+              "written_by": "combat_system",
+              "read_by": [
+                "combat_system",
+                "input_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "blockstun_timer",
+              "type": "int",
+              "purpose": "Frames remaining in blockstun",
+              "written_by": "combat_system",
+              "read_by": [
+                "combat_system",
+                "input_system",
+                "blocking_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "pushback_velocity",
+              "type": "float",
+              "purpose": "Horizontal knockback velocity from hit/block",
+              "written_by": "combat_system",
+              "read_by": [
+                "physics_system"
+              ],
+              "write_verb": "set"
+            }
+          ],
+          "derived": []
+        },
+        "game": {
+          "config": [
+            {
+              "name": "hitstop_light",
+              "type": "int",
+              "purpose": "Hitstop frames for light attacks"
+            },
+            {
+              "name": "hitstop_medium",
+              "type": "int",
+              "purpose": "Hitstop frames for medium attacks"
+            },
+            {
+              "name": "hitstop_heavy",
+              "type": "int",
+              "purpose": "Hitstop frames for heavy attacks"
+            },
+            {
+              "name": "hitstop_special",
+              "type": "int",
+              "purpose": "Hitstop frames for special moves"
+            },
+            {
+              "name": "block_pushback_px",
+              "type": "int",
+              "purpose": "Pushback on block in pixels"
+            }
+          ],
+          "state": [],
+          "derived": []
+        }
+      },
+      "movement_system": {
+        "fighter": {
+          "config": [
+            {
+              "name": "walk_speed",
+              "type": "float",
+              "purpose": "Forward walk speed px/frame (scaled for 1080p)"
+            },
+            {
+              "name": "back_walk_speed",
+              "type": "float",
+              "purpose": "Backward walk speed px/frame (scaled for 1080p)"
+            },
+            {
+              "name": "jump_velocity_y",
+              "type": "float",
+              "purpose": "Initial jump Y velocity (scaled for 1080p)"
+            },
+            {
+              "name": "jump_velocity_x",
+              "type": "float",
+              "purpose": "Horizontal air speed (scaled for 1080p)"
+            },
+            {
+              "name": "jump_height",
+              "type": "float",
+              "purpose": "Max jump height in pixels (scaled for 1080p)"
+            }
+          ],
+          "state": [
+            {
+              "name": "position",
+              "type": "Vector2",
+              "purpose": "Current position",
+              "written_by": "physics_system",
+              "read_by": [
+                "collision_system",
+                "animation_system",
+                "combat_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "velocity",
+              "type": "Vector2",
+              "purpose": "Current velocity",
+              "written_by": "physics_system",
+              "read_by": [
+                "physics_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "facing_direction",
+              "type": "int",
+              "purpose": "1=right, -1=left. Determines forward/back relative to opponent",
+              "written_by": "movement_system",
+              "read_by": [
+                "input_system",
+                "combat_system",
+                "animation_system",
+                "projectile_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "is_airborne",
+              "type": "bool",
+              "purpose": "True when above floor_y",
+              "written_by": "physics_system",
+              "read_by": [
+                "input_system",
+                "combat_system",
+                "movement_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "is_crouching",
+              "type": "bool",
+              "purpose": "True when holding down",
+              "written_by": "input_system",
+              "read_by": [
+                "combat_system",
+                "blocking_system",
+                "animation_system"
+              ],
+              "write_verb": "set"
+            }
+          ],
+          "derived": []
+        },
+        "game": {
+          "config": [
+            {
+              "name": "floor_y",
+              "type": "int",
+              "purpose": "Y coordinate of the fighting floor (84% of 1080)"
+            },
+            {
+              "name": "gravity",
+              "type": "float",
+              "purpose": "Gravity acceleration px/frame\u00b2 (scaled for 1080p)"
+            },
+            {
+              "name": "screen_w",
+              "type": "int",
+              "purpose": "Stage width in pixels (fullscreen 1080p)"
+            },
+            {
+              "name": "screen_h",
+              "type": "int",
+              "purpose": "Stage height in pixels (fullscreen 1080p)"
+            },
+            {
+              "name": "stage_left_bound",
+              "type": "int",
+              "purpose": "Left wall X"
+            },
+            {
+              "name": "stage_right_bound",
+              "type": "int",
+              "purpose": "Right wall X"
+            }
+          ],
+          "state": [],
+          "derived": []
+        }
+      },
+      "blocking_system": {
+        "fighter": {
+          "config": [
+            {
+              "name": "can_block",
+              "type": "bool",
+              "purpose": "Whether this fighter can block (false for some bosses)"
+            },
+            {
+              "name": "chip_damage_multiplier",
+              "type": "float",
+              "purpose": "Damage taken when blocking (fraction of full damage)"
+            }
+          ],
+          "state": [
+            {
+              "name": "is_blocking",
+              "type": "bool",
+              "purpose": "Currently in block state",
+              "written_by": "blocking_system",
+              "read_by": [
+                "combat_system",
+                "animation_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "block_type",
+              "type": "string",
+              "purpose": "none/stand/crouch \u2014 determines which attacks are blocked",
+              "written_by": "blocking_system",
+              "read_by": [
+                "combat_system"
+              ],
+              "write_verb": "set_state"
+            }
+          ],
+          "derived": []
+        }
+      },
+      "stun_system": {
+        "fighter": {
+          "config": [
+            {
+              "name": "stun_enabled",
+              "type": "bool",
+              "purpose": "Whether this fighter can be stunned"
+            },
+            {
+              "name": "stun_threshold",
+              "type": "int",
+              "purpose": "Stun meter value that triggers dizzy"
+            },
+            {
+              "name": "stun_duration_frames",
+              "type": "int",
+              "purpose": "How long dizzy lasts"
+            },
+            {
+              "name": "stun_animation",
+              "type": "string",
+              "purpose": "Asset ID for stun animation (per character)"
+            }
+          ],
+          "state": [
+            {
+              "name": "stun_meter",
+              "type": "int",
+              "purpose": "Accumulated stun damage",
+              "written_by": "stun_system",
+              "read_by": [
+                "stun_system",
+                "round_system"
+              ],
+              "write_verb": "increment"
+            },
+            {
+              "name": "stun_timer",
+              "type": "int",
+              "purpose": "Frames remaining in dizzy state",
+              "written_by": "stun_system",
+              "read_by": [
+                "stun_system",
+                "input_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "is_stunned",
+              "type": "bool",
+              "purpose": "Currently in dizzy state",
+              "written_by": "stun_system",
+              "read_by": [
+                "input_system",
+                "combat_system",
+                "animation_system"
+              ],
+              "write_verb": "set"
+            }
+          ],
+          "derived": []
+        },
+        "game": {
+          "config": [
+            {
+              "name": "stun_decay_per_idle_frame",
+              "type": "int",
+              "purpose": "Stun meter reduction per frame when not being hit"
+            }
+          ],
+          "state": [],
+          "derived": []
+        }
+      },
+      "combo_system": {
+        "fighter": {
+          "config": [
+            {
+              "name": "juggle_limit",
+              "type": "int",
+              "purpose": "Max additional hits on airborne opponent"
+            },
+            {
+              "name": "combo_enabled",
+              "type": "bool",
+              "purpose": "Whether combos are tracked for this fighter"
+            }
+          ],
+          "state": [
+            {
+              "name": "combo_count",
+              "type": "int",
+              "purpose": "Current combo hit count",
+              "written_by": "combo_system",
+              "read_by": [
+                "combo_system",
+                "animation_system"
+              ],
+              "write_verb": "increment"
+            },
+            {
+              "name": "combo_damage_scaling",
+              "type": "float",
+              "purpose": "Damage multiplier that decreases per combo hit",
+              "written_by": "combo_system",
+              "read_by": [
+                "combat_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "juggle_count",
+              "type": "int",
+              "purpose": "Hits landed on current airborne opponent",
+              "written_by": "combo_system",
+              "read_by": [
+                "combat_system"
+              ],
+              "write_verb": "increment"
+            }
+          ],
+          "derived": []
+        }
+      },
+      "projectile_system": {
+        "fighter": {
+          "config": [
+            {
+              "name": "has_projectile",
+              "type": "bool",
+              "purpose": "Whether this fighter can spawn projectiles"
+            },
+            {
+              "name": "projectile_limit",
+              "type": "int",
+              "purpose": "Max projectiles on screen at once"
+            }
+          ],
+          "state": [
+            {
+              "name": "projectile_on_screen",
+              "type": "int",
+              "purpose": "Count of active projectiles for this fighter",
+              "written_by": "projectile_system",
+              "read_by": [
+                "projectile_system",
+                "input_system"
+              ],
+              "write_verb": "increment"
+            },
+            {
+              "name": "is_firing_projectile",
+              "type": "bool",
+              "purpose": "Locked during projectile startup animation",
+              "written_by": "projectile_system",
+              "read_by": [
+                "input_system",
+                "animation_system"
+              ],
+              "write_verb": "set"
+            }
+          ],
+          "derived": []
+        },
+        "projectile": {
+          "config": [
+            {
+              "name": "damage",
+              "type": "int",
+              "purpose": "Damage on hit"
+            },
+            {
+              "name": "speed",
+              "type": "float",
+              "purpose": "Travel speed px/frame"
+            },
+            {
+              "name": "lifetime_frames",
+              "type": "int",
+              "purpose": "Max frames before auto-despawn"
+            },
+            {
+              "name": "stun_value",
+              "type": "int",
+              "purpose": "Stun meter contribution on hit"
+            },
+            {
+              "name": "hitstun_frames",
+              "type": "int",
+              "purpose": "Hitstun inflicted"
+            },
+            {
+              "name": "blockstun_frames",
+              "type": "int",
+              "purpose": "Blockstun inflicted"
+            },
+            {
+              "name": "hitbox_width",
+              "type": "int",
+              "purpose": "Hitbox width"
+            },
+            {
+              "name": "hitbox_height",
+              "type": "int",
+              "purpose": "Hitbox height"
+            },
+            {
+              "name": "spawn_offset",
+              "type": "Vector2",
+              "purpose": "Offset from owner position on spawn"
+            }
+          ],
+          "state": [
+            {
+              "name": "position",
+              "type": "Vector2",
+              "purpose": "Current position",
+              "written_by": "physics_system",
+              "read_by": [
+                "collision_system",
+                "animation_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "owner_id",
+              "type": "string",
+              "purpose": "Which fighter spawned this",
+              "written_by": "projectile_system",
+              "read_by": [
+                "collision_system",
+                "combat_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "active",
+              "type": "bool",
+              "purpose": "Still alive",
+              "written_by": "projectile_system",
+              "read_by": [
+                "physics_system",
+                "collision_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "frames_alive",
+              "type": "int",
+              "purpose": "Frame counter for lifetime check",
+              "written_by": "physics_system",
+              "read_by": [
+                "projectile_system"
+              ],
+              "write_verb": "increment"
+            }
+          ],
+          "derived": []
+        }
+      },
+      "input_system": {
+        "fighter": {
+          "config": [],
+          "state": [
+            {
+              "name": "input_buffer",
+              "type": "array",
+              "purpose": "Last 20 directional inputs with timestamps",
+              "written_by": "input_system",
+              "read_by": [
+                "input_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "current_action",
+              "type": "string",
+              "purpose": "Currently executing action",
+              "written_by": "input_system",
+              "read_by": [
+                "combat_system",
+                "animation_system",
+                "movement_system"
+              ],
+              "write_verb": "set_state"
+            },
+            {
+              "name": "action_frame",
+              "type": "int",
+              "purpose": "Frame counter within current action",
+              "written_by": "input_system",
+              "read_by": [
+                "combat_system",
+                "animation_system"
+              ],
+              "write_verb": "increment"
+            }
+          ],
+          "derived": []
+        },
+        "game": {
+          "config": [
+            {
+              "name": "input_buffer_size",
+              "type": "int",
+              "purpose": "Max entries in input buffer"
+            },
+            {
+              "name": "input_buffer_max_age_ms",
+              "type": "int",
+              "purpose": "Max age of buffer entry before pruning"
+            },
+            {
+              "name": "p1_keys",
+              "type": "object",
+              "purpose": "P1 key bindings (global, not per character)"
+            }
+          ],
+          "state": [],
+          "derived": []
+        }
+      },
+      "animation_system": {
+        "fighter": {
+          "config": [
+            {
+              "name": "sprite_scale",
+              "type": "Vector2",
+              "purpose": "Sprite scale factor"
+            },
+            {
+              "name": "sprite_height_percent",
+              "type": "float",
+              "purpose": "Fighter height as % of screen height"
+            }
+          ],
+          "state": [
+            {
+              "name": "current_animation",
+              "type": "string",
+              "purpose": "Currently playing animation name",
+              "written_by": "animation_system",
+              "read_by": [
+                "animation_system"
+              ],
+              "write_verb": "set_state"
+            },
+            {
+              "name": "animation_frame",
+              "type": "int",
+              "purpose": "Current frame within animation",
+              "written_by": "animation_system",
+              "read_by": [
+                "animation_system",
+                "combat_system"
+              ],
+              "write_verb": "increment"
+            },
+            {
+              "name": "sprite_flip_h",
+              "type": "bool",
+              "purpose": "Horizontal flip (based on facing_direction)",
+              "written_by": "animation_system",
+              "read_by": [
+                "animation_system"
+              ],
+              "write_verb": "set"
+            }
+          ],
+          "derived": []
+        }
+      },
+      "round_system": {
+        "fighter": {
+          "config": [],
+          "state": [
+            {
+              "name": "round_wins",
+              "type": "int",
+              "purpose": "Rounds won in current match",
+              "written_by": "round_system",
+              "read_by": [
+                "round_system"
+              ],
+              "write_verb": "increment"
+            }
+          ],
+          "derived": []
+        },
+        "game": {
+          "config": [
+            {
+              "name": "rounds_to_win",
+              "type": "int",
+              "purpose": "Rounds needed to win the match"
+            },
+            {
+              "name": "max_rounds",
+              "type": "int",
+              "purpose": "Maximum rounds per match"
+            }
+          ],
+          "state": [
+            {
+              "name": "current_round",
+              "type": "int",
+              "purpose": "Current round number",
+              "written_by": "round_system",
+              "read_by": [
+                "round_system",
+                "animation_system"
+              ],
+              "write_verb": "increment"
+            },
+            {
+              "name": "round_timer_frames",
+              "type": "int",
+              "purpose": "Round timer in frames (99s \u00d7 60fps)",
+              "written_by": "round_system",
+              "read_by": [
+                "round_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "round_state",
+              "type": "string",
+              "purpose": "pre_round/fighting/ko/time_up/round_over/match_over",
+              "written_by": "round_system",
+              "read_by": [
+                "input_system",
+                "combat_system",
+                "physics_system"
+              ],
+              "write_verb": "set_state"
+            }
+          ],
+          "derived": [
+            {
+              "name": "round_timer_seconds",
+              "type": "int",
+              "purpose": "Timer display value",
+              "read_by": [
+                "hud_text"
+              ]
+            }
+          ]
+        }
+      },
+      "charge_system": {
+        "fighter": {
+          "config": [
+            {
+              "name": "has_charge_moves",
+              "type": "bool",
+              "purpose": "Whether this fighter uses charge inputs"
+            },
+            {
+              "name": "charge_duration_frames",
+              "type": "int",
+              "purpose": "Frames needed to build full charge"
+            }
+          ],
+          "state": [
+            {
+              "name": "charge_direction",
+              "type": "string",
+              "purpose": "Current charge direction (none/back/down)",
+              "written_by": "charge_system",
+              "read_by": [
+                "charge_system",
+                "input_system"
+              ],
+              "write_verb": "set_state"
+            },
+            {
+              "name": "charge_frames",
+              "type": "int",
+              "purpose": "Frames held in charge direction",
+              "written_by": "charge_system",
+              "read_by": [
+                "charge_system",
+                "input_system"
+              ],
+              "write_verb": "increment"
+            },
+            {
+              "name": "charge_ready",
+              "type": "bool",
+              "purpose": "Charge is complete and ready to release",
+              "written_by": "charge_system",
+              "read_by": [
+                "input_system"
+              ],
+              "write_verb": "set"
+            }
+          ],
+          "derived": []
+        }
+      },
+      "special_move_system": {
+        "fighter": {
+          "config": [
+            {
+              "name": "special_move_count",
+              "type": "int",
+              "purpose": "Number of special moves this fighter has"
+            }
+          ],
+          "state": [
+            {
+              "name": "special_cooldown_timer",
+              "type": "int",
+              "purpose": "Frames until next special move allowed",
+              "written_by": "special_move_system",
+              "read_by": [
+                "special_move_system",
+                "input_system"
+              ],
+              "write_verb": "set"
+            }
+          ],
+          "derived": []
+        }
+      },
+      "ai_system": {
+        "fighter": {
+          "config": [
+            {
+              "name": "is_cpu",
+              "type": "bool",
+              "purpose": "Whether this fighter is CPU-controlled"
+            },
+            {
+              "name": "ai_difficulty",
+              "type": "int",
+              "purpose": "AI difficulty level 1-10"
+            },
+            {
+              "name": "ai_aggression",
+              "type": "float",
+              "purpose": "0.0=defensive, 1.0=aggressive"
+            },
+            {
+              "name": "ai_reaction_frames",
+              "type": "int",
+              "purpose": "Minimum frames before AI reacts to an event"
+            }
+          ],
+          "state": [
+            {
+              "name": "ai_decision_timer",
+              "type": "int",
+              "purpose": "Frames until next AI decision",
+              "written_by": "ai_system",
+              "read_by": [
+                "ai_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "ai_current_plan",
+              "type": "string",
+              "purpose": "Current AI action plan (maps to input actions)",
+              "written_by": "ai_system",
+              "read_by": [
+                "ai_system",
+                "input_system"
+              ],
+              "write_verb": "set_state"
+            }
+          ],
+          "derived": []
+        }
+      },
+      "collision_system": {
+        "fighter": {
+          "config": [
+            {
+              "name": "stand_hurtbox",
+              "type": "object",
+              "purpose": "Standing hurtbox dimensions"
+            },
+            {
+              "name": "crouch_hurtbox",
+              "type": "object",
+              "purpose": "Crouching hurtbox dimensions"
+            },
+            {
+              "name": "air_hurtbox",
+              "type": "object",
+              "purpose": "Airborne hurtbox dimensions"
+            }
+          ],
+          "state": [
+            {
+              "name": "active_hitbox",
+              "type": "object",
+              "purpose": "Currently active attack hitbox (null when not attacking)",
+              "written_by": "combat_system",
+              "read_by": [
+                "collision_system"
+              ],
+              "write_verb": "set"
+            },
+            {
+              "name": "hit_this_frame",
+              "type": "bool",
+              "purpose": "Whether a hit was detected this frame",
+              "written_by": "collision_system",
+              "read_by": [
+                "combat_system",
+                "stun_system",
+                "combo_system"
+              ],
+              "write_verb": "set"
+            }
+          ],
+          "derived": []
+        }
+      }
+    },
+    "normal_attack_template": {
+      "special_move_system": {
+        "description": "Each of the 18 normal attacks (6 strengths \u00d7 3 poses). Role-generic \u2014 every fighter has all 18.",
+        "attacks": [
+          "light_punch",
+          "medium_punch",
+          "heavy_punch",
+          "light_kick",
+          "medium_kick",
+          "heavy_kick",
+          "crouch_light_punch",
+          "crouch_medium_punch",
+          "crouch_heavy_punch",
+          "crouch_light_kick",
+          "crouch_medium_kick",
+          "crouch_heavy_kick",
+          "jump_light_punch",
+          "jump_medium_punch",
+          "jump_heavy_punch",
+          "jump_light_kick",
+          "jump_medium_kick",
+          "jump_heavy_kick"
+        ],
+        "per_attack": [
+          {
+            "name": "{attack}_startup",
+            "type": "int",
+            "purpose": "Startup frames",
+            "write_verb": "set"
+          },
+          {
+            "name": "{attack}_active",
+            "type": "int",
+            "purpose": "Active frames",
+            "write_verb": "set"
+          },
+          {
+            "name": "{attack}_recovery",
+            "type": "int",
+            "purpose": "Recovery frames",
+            "write_verb": "set"
+          },
+          {
+            "name": "{attack}_damage",
+            "type": "int",
+            "purpose": "Base damage",
+            "write_verb": "set"
+          },
+          {
+            "name": "{attack}_stun_value",
+            "type": "int",
+            "purpose": "Stun meter contribution",
+            "write_verb": "set"
+          },
+          {
+            "name": "{attack}_hitstun",
+            "type": "int",
+            "purpose": "Hitstun inflicted on hit",
+            "write_verb": "set"
+          },
+          {
+            "name": "{attack}_blockstun",
+            "type": "int",
+            "purpose": "Blockstun inflicted on block",
+            "write_verb": "set"
+          },
+          {
+            "name": "{attack}_hitbox_w",
+            "type": "int",
+            "purpose": "Attack hitbox width",
+            "write_verb": "set"
+          },
+          {
+            "name": "{attack}_hitbox_h",
+            "type": "int",
+            "purpose": "Attack hitbox height",
+            "write_verb": "set"
+          },
+          {
+            "name": "{attack}_hitbox_offset",
+            "type": "Vector2",
+            "purpose": "Hitbox position relative to fighter",
+            "write_verb": "set"
+          },
+          {
+            "name": "{attack}_hits_low",
+            "type": "bool",
+            "purpose": "Must be crouch-blocked",
+            "write_verb": "set"
+          },
+          {
+            "name": "{attack}_is_overhead",
+            "type": "bool",
+            "purpose": "Cannot be crouch-blocked",
+            "write_verb": "set"
+          },
+          {
+            "name": "{attack}_cancel_into_special",
+            "type": "bool",
+            "purpose": "Can cancel into special move on hit/block",
+            "write_verb": "set"
+          }
+        ]
+      }
+    },
+    "special_move_template": {
+      "special_move_system": {
+        "description": "Each special move adds these properties. Multiply by special_move_count.",
+        "config": [
+          {
+            "name": "{move}_enabled",
+            "type": "bool",
+            "purpose": "Whether this move is available",
+            "write_verb": "set"
+          },
+          {
+            "name": "{move}_input_type",
+            "type": "string",
+            "purpose": "Input type: qcf/qcb/dp/charge/mash",
+            "write_verb": "set"
+          },
+          {
+            "name": "{move}_input_button",
+            "type": "string",
+            "purpose": "Button category: punch/kick",
+            "write_verb": "set"
+          },
+          {
+            "name": "{move}_startup",
+            "type": "int",
+            "purpose": "Startup frames",
+            "write_verb": "set"
+          },
+          {
+            "name": "{move}_active",
+            "type": "int",
+            "purpose": "Active frames",
+            "write_verb": "set"
+          },
+          {
+            "name": "{move}_recovery",
+            "type": "int",
+            "purpose": "Recovery frames",
+            "write_verb": "set"
+          },
+          {
+            "name": "{move}_damage",
+            "type": "int",
+            "purpose": "Base damage",
+            "write_verb": "set"
+          },
+          {
+            "name": "{move}_stun_value",
+            "type": "int",
+            "purpose": "Stun meter contribution",
+            "write_verb": "set"
+          },
+          {
+            "name": "{move}_cooldown_frames",
+            "type": "int",
+            "purpose": "Cooldown after use",
+            "write_verb": "set"
+          },
+          {
+            "name": "{move}_is_projectile",
+            "type": "bool",
+            "purpose": "Does this spawn a projectile",
+            "write_verb": "set"
+          },
+          {
+            "name": "{move}_invincible_frames",
+            "type": "int",
+            "purpose": "Invincibility frames during startup (e.g. shoryuken)",
+            "write_verb": "set"
+          },
+          {
+            "name": "{move}_hits_low",
+            "type": "bool",
+            "purpose": "Must be crouch-blocked",
+            "write_verb": "set"
+          },
+          {
+            "name": "{move}_is_anti_air",
+            "type": "bool",
+            "purpose": "Effective against airborne opponents",
+            "write_verb": "set"
+          },
+          {
+            "name": "{move}_animation",
+            "type": "string",
+            "purpose": "Animation asset ID",
+            "write_verb": "set"
+          }
+        ]
+      }
+    },
+    "fighter_animations_required": [
+      "idle",
+      "walk_forward",
+      "walk_backward",
+      "jump_up",
+      "jump_forward",
+      "jump_backward",
+      "crouch",
+      "crouch_to_stand",
+      "light_punch",
+      "medium_punch",
+      "heavy_punch",
+      "light_kick",
+      "medium_kick",
+      "heavy_kick",
+      "crouch_light_punch",
+      "crouch_medium_punch",
+      "crouch_heavy_punch",
+      "crouch_light_kick",
+      "crouch_medium_kick",
+      "crouch_heavy_kick",
+      "jump_light_punch",
+      "jump_medium_punch",
+      "jump_heavy_punch",
+      "jump_light_kick",
+      "jump_medium_kick",
+      "jump_heavy_kick",
+      "hit_stun_high",
+      "hit_stun_low",
+      "hit_stun_air",
+      "block_stun_stand",
+      "block_stun_crouch",
+      "knockdown",
+      "get_up",
+      "throw",
+      "thrown",
+      "dizzy",
+      "victory",
+      "defeat"
+    ]
+  },
+  "detail_level": {
+    "default_values": {
+      "fighter.max_health": 1000,
+      "fighter.damage_reduction": 0.0,
+      "game.round_time_seconds": 99,
+      "hud_bar.target_property": "",
+      "hud_bar.max_property": "",
+      "fighter.throw_range": 48,
+      "fighter.throw_damage": 120,
+      "game.hitstop_light": 5,
+      "game.hitstop_medium": 8,
+      "game.hitstop_heavy": 12,
+      "game.hitstop_special": 10,
+      "game.block_pushback_px": 20,
+      "fighter.walk_speed": 8.4,
+      "fighter.back_walk_speed": 6.7,
+      "fighter.jump_velocity_y": -38.4,
+      "fighter.jump_velocity_x": 9.6,
+      "fighter.jump_height": 456,
+      "game.floor_y": 912,
+      "game.gravity": 1.9,
+      "game.screen_w": 1920,
+      "game.screen_h": 1080,
+      "game.stage_left_bound": 96,
+      "game.stage_right_bound": 1824,
+      "fighter.can_block": true,
+      "fighter.chip_damage_multiplier": 0.25,
+      "fighter.stun_enabled": true,
+      "fighter.stun_threshold": 100,
+      "fighter.stun_duration_frames": 300,
+      "fighter.stun_animation": "",
+      "game.stun_decay_per_idle_frame": 1,
+      "fighter.juggle_limit": 2,
+      "fighter.combo_enabled": true,
+      "fighter.has_projectile": false,
+      "fighter.projectile_limit": 1,
+      "projectile.damage": 50,
+      "projectile.speed": 8.0,
+      "projectile.lifetime_frames": 180,
+      "projectile.stun_value": 15,
+      "projectile.hitstun_frames": 20,
+      "projectile.blockstun_frames": 12,
+      "projectile.hitbox_width": 24,
+      "projectile.hitbox_height": 24,
+      "projectile.spawn_offset": "Vector2(40, -20)",
+      "game.input_buffer_size": 20,
+      "game.input_buffer_max_age_ms": 500,
+      "game.p1_keys": {
+        "left": "A",
+        "right": "D",
+        "up": "W",
+        "down": "S",
+        "lp": "U",
+        "mp": "I",
+        "hp": "O",
+        "lk": "J",
+        "mk": "K",
+        "hk": "L",
+        "start": "SPACE"
+      },
+      "fighter.sprite_scale": "Vector2(1, 1)",
+      "fighter.sprite_height_percent": 0.35,
+      "game.rounds_to_win": 2,
+      "game.max_rounds": 3,
+      "fighter.has_charge_moves": false,
+      "fighter.charge_duration_frames": 60,
+      "fighter.special_move_count": 0,
+      "normal_attack.{attack}_hits_low": false,
+      "normal_attack.{attack}_is_overhead": false,
+      "normal_attack.{attack}_cancel_into_special": false,
+      "special_move.{move}_enabled": true,
+      "special_move.{move}_input_type": "qcf",
+      "special_move.{move}_input_button": "punch",
+      "special_move.{move}_startup": 12,
+      "special_move.{move}_active": 4,
+      "special_move.{move}_recovery": 30,
+      "special_move.{move}_damage": 80,
+      "special_move.{move}_stun_value": 20,
+      "special_move.{move}_cooldown_frames": 45,
+      "special_move.{move}_is_projectile": false,
+      "special_move.{move}_invincible_frames": 0,
+      "special_move.{move}_hits_low": false,
+      "special_move.{move}_is_anti_air": false,
+      "special_move.{move}_animation": "",
+      "fighter.is_cpu": false,
+      "fighter.ai_difficulty": 5,
+      "fighter.ai_aggression": 0.5,
+      "fighter.ai_reaction_frames": 12,
+      "fighter.stand_hurtbox": {
+        "x": 0,
+        "y": 0,
+        "w": 40,
+        "h": 80
+      },
+      "fighter.crouch_hurtbox": {
+        "x": 0,
+        "y": 22,
+        "w": 44,
+        "h": 58
+      },
+      "fighter.air_hurtbox": {
+        "x": 0,
+        "y": 0,
+        "w": 40,
+        "h": 70
+      }
+    },
+    "initial_values": {
+      "fighter.current_health": "max_health",
+      "fighter.is_ko": false,
+      "hud_bar.display_value": 1.0,
+      "fighter.hitstop_timer": 0,
+      "fighter.hitstun_timer": 0,
+      "fighter.blockstun_timer": 0,
+      "fighter.pushback_velocity": 0.0,
+      "fighter.position": "Vector2(200, 380)",
+      "fighter.velocity": "Vector2(0, 0)",
+      "fighter.facing_direction": 1,
+      "fighter.is_airborne": false,
+      "fighter.is_crouching": false,
+      "fighter.is_blocking": false,
+      "fighter.block_type": "none",
+      "fighter.stun_meter": 0,
+      "fighter.stun_timer": 0,
+      "fighter.is_stunned": false,
+      "fighter.combo_count": 0,
+      "fighter.combo_damage_scaling": 1.0,
+      "fighter.juggle_count": 0,
+      "fighter.projectile_on_screen": 0,
+      "fighter.is_firing_projectile": false,
+      "projectile.position": "Vector2(0, 0)",
+      "projectile.owner_id": "",
+      "projectile.active": true,
+      "projectile.frames_alive": 0,
+      "fighter.input_buffer": "[]",
+      "fighter.current_action": "none",
+      "fighter.action_frame": 0,
+      "fighter.current_animation": "idle",
+      "fighter.animation_frame": 0,
+      "fighter.sprite_flip_h": false,
+      "fighter.round_wins": 0,
+      "game.current_round": 1,
+      "game.round_timer_frames": 5940,
+      "game.round_state": "pre_round",
+      "fighter.charge_direction": "none",
+      "fighter.charge_frames": 0,
+      "fighter.charge_ready": false,
+      "fighter.special_cooldown_timer": 0,
+      "fighter.ai_decision_timer": 0,
+      "fighter.ai_current_plan": "idle",
+      "fighter.active_hitbox": null,
+      "fighter.hit_this_frame": false
+    },
+    "formulas": {
+      "fighter.health_percent": "current_health / max_health",
+      "game.round_timer_seconds": "round_timer_frames / 60"
+    },
+    "property_count_summary": {
+      "fighter_role_generic": {
+        "config": "~35 properties (health, movement, blocking, stun, combo, projectile, AI, collision, animation)",
+        "state": "~25 properties (runtime state for all systems)",
+        "derived": "~2 properties (health_percent, round_timer_seconds)",
+        "normal_attacks": "18 attacks \u00d7 13 properties each = 234 properties",
+        "total_per_fighter_generic": "~296 properties"
+      },
+      "fighter_instance_unique": {
+        "per_special_move": "15 properties per special move",
+        "typical": "3 special moves \u00d7 15 = 45 properties",
+        "total_per_fighter_unique": "~45 properties"
+      },
+      "total_per_fighter": "~341 properties (296 generic + 45 unique for 3 specials)",
+      "note": "Ryu had 306 properties in the unconstrained run. This template produces ~341. The LLM was UNDER-speccing, not over-speccing."
+    }
+  }
+}

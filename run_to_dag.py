@@ -24,6 +24,9 @@ async def main():
         build_entity_spec,
         build_impact_matrix as build_impact_deterministic,
     )
+    from rayxi.spec.genre_detector import detect_genre
+    from rayxi.spec.kb_retrieval import retrieve_relevant_chunks
+    from rayxi.spec.system_mapper import map_hlr_to_template
     from rayxi.spec.hlr import run_hlr
     from rayxi.spec.hlr_validator import validate_hlr
     from rayxi.spec.impact_validator import validate_impact_matrix
@@ -41,48 +44,91 @@ async def main():
     t0 = time.time()
     print(f"Primary: {type(caller).__name__}")
 
-    # STEP 1: HLR
+    kb_dir = Path("knowledge")
+
+    # STEP 0: Detect genre from prompt
     print("\n" + "=" * 70)
-    print("STEP 1: HLR")
+    print("STEP 0: Genre Detection")
+    print("=" * 70)
+    detected_genre = detect_genre(PROMPT, kb_dir)
+    print(f"  Detected genre: {detected_genre}")
+    if not detected_genre:
+        print("  ERROR: could not detect genre — aborting")
+        return
+
+    # STEP 1: Load HLT (High-Level Template) — for HLR reference only
+    print("\n" + "=" * 70)
+    print("STEP 1: Load HLT")
+    print("=" * 70)
+    hlt_path = _TEMPLATE_DIR / f"{detected_genre}_hlt.json"
+    if not hlt_path.exists():
+        print(f"  No HLT for genre '{detected_genre}' at {hlt_path}")
+        return
+
+    import json as _json
+    hlt = _json.loads(hlt_path.read_text())
+    hlt_systems = {name: info.get("description", "") for name, info in hlt.get("systems", {}).items()}
+    hlis_groups = hlt.get("hlis_groups", [])
+    print(f"  HLT: {hlt_path.name}")
+    print(f"  Systems: {len(hlt_systems)}")
+    print(f"  HLIS groups: {len(hlis_groups)}")
+
+    # The full template (still used by deterministic Impact/MLR for property structure)
+    template_path = _TEMPLATE_DIR / f"{detected_genre}.json"
+    if not template_path.exists():
+        print(f"  No full template at {template_path}")
+        return
+
+    # STEP 2: Retrieve relevant KB chunks via embedding
+    print("\n" + "=" * 70)
+    print("STEP 2: KB Retrieval")
+    print("=" * 70)
+    kb_chunks = retrieve_relevant_chunks(PROMPT, kb_dir, top_k=10)
+    print(f"  Retrieved {len(kb_chunks)} chunks")
+    for label, _, score in kb_chunks[:5]:
+        print(f"    {score:.3f}  {label}")
+
+    # STEP 3: HLR (with HLT + KB chunks as context)
+    print("\n" + "=" * 70)
+    print("STEP 3: HLR")
     print("=" * 70)
     t = time.time()
-    hlr, dynamic = await run_hlr(PROMPT, caller)
+    hlr, dynamic = await run_hlr(
+        PROMPT, caller,
+        template_systems=hlt_systems,
+        kb_chunks=kb_chunks,
+    )
     print(f"  [{time.time()-t:.1f}s] {hlr.game_name}")
     for e in hlr.enums:
         flag = " [entity]" if e.entity else ""
         print(f"  {e.name}: {e.values}{flag}")
-    errors = validate_hlr(hlr, dynamic)
+    errors = validate_hlr(hlr, dynamic, hlt_provided=True)
     if errors:
         for e in errors:
             print(f"  x {e}")
         return
     print("  PASSED")
 
-    # STEP 2: KB Template
-    print("\n" + "=" * 70)
-    print("STEP 2: KB Template")
-    print("=" * 70)
-    genre = hlr.genre.replace(" ", "_").lower()
-    template_path = _TEMPLATE_DIR / f"{genre}.json"
-    if not template_path.exists():
-        for tp in _TEMPLATE_DIR.glob("*.json"):
-            if genre.replace("_", "") in tp.stem.replace("_", ""):
-                template_path = tp
-                break
-    if not template_path.exists():
-        print(f"  No template for genre '{genre}'")
-        return
+    # Re-load template now that we have real characters from HLR
     schema = load_game_schema(template_path, hlr)
+    print(f"\n  Reloaded template with HLR characters: {hlr.get_enum('characters')}")
     print(format_schema_summary(schema))
 
-    # STEP 3: Impact Matrix (deterministic — zero LLM calls)
+    # STEP 4: Impact Matrix (deterministic — zero LLM calls)
     print("\n" + "=" * 70)
-    print("STEP 3: Impact Matrix (deterministic)")
+    print("STEP 4: Impact Matrix (deterministic)")
     print("=" * 70)
     t = time.time()
     systems = hlr.get_enum("game_systems")
     characters = hlr.get_enum("characters")
-    impact = build_impact_deterministic(schema, systems, characters)
+
+    # Map HLR system names to template system names via embeddings
+    system_mapping = map_hlr_to_template(hlr, schema)
+    if system_mapping:
+        mapped_count = sum(1 for k, v in system_mapping.items() if k != v)
+        print(f"  System mapping: {mapped_count}/{len(system_mapping)} HLR systems remapped to template")
+
+    impact = build_impact_deterministic(schema, systems, characters, system_mapping=system_mapping)
     print(f"  [{time.time()-t:.3f}s] {len(impact.entries)} entries, {len(impact.mechanics)} mechanics")
     print(f"  Properties traced: {len(impact.all_properties())}")
     impact_errors = validate_impact_matrix(hlr, impact)
@@ -93,9 +139,9 @@ async def main():
     else:
         print("  PASSED")
 
-    # STEP 4: Scene Manifest
+    # STEP 5: Scene Manifest
     print("\n" + "=" * 70)
-    print("STEP 4: Scene Manifest")
+    print("STEP 5: Scene Manifest")
     print("=" * 70)
     t = time.time()
     manifest = await run_scene_manifest(hlr, impact, caller)
@@ -107,9 +153,9 @@ async def main():
         for e in manifest_errors[:10]:
             print(f"    x {e}")
 
-    # STEP 5: MLR (hybrid — FSM/collisions from LLM, interactions/entities deterministic)
+    # STEP 6: MLR (hybrid — FSM/collisions from LLM, interactions/entities deterministic)
     print("\n" + "=" * 70)
-    print("STEP 5: MLR (hybrid)")
+    print("STEP 6: MLR (hybrid)")
     print("=" * 70)
     t = time.time()
 
@@ -122,7 +168,7 @@ async def main():
     for scene_mlr in mlr_scenes:
         # Deterministic interactions
         scene_mlr.system_interactions = build_all_interactions(
-            schema, systems, scene_mlr.scene_name,
+            schema, systems, scene_mlr.scene_name, system_mapping=system_mapping,
         )
         # Deterministic entity specs
         hlr_scene = next(
@@ -151,9 +197,9 @@ async def main():
     else:
         print("  PASSED")
 
-    # STEP 6: Build DAG
+    # STEP 7: Build DAG
     print("\n" + "=" * 70)
-    print("STEP 6: Build DAG")
+    print("STEP 7: Build DAG")
     print("=" * 70)
     scene_fsms = {}
     scene_collisions = {}

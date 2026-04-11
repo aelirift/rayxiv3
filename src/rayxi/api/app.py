@@ -23,8 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from rayxi.api.config import web_dir
-from rayxi.api.routes.chat import router as chat_router
-from rayxi.api.routes.graph import router as graph_router
+# chat + graph routers temporarily disabled — depend on deleted rayxi.agent / rayxi.layers modules
 from rayxi.api.routes.play import router as play_router
 from rayxi.api.routes.schemas import router as schemas_router
 from rayxi.api.routes.studio import router as studio_router
@@ -52,9 +51,7 @@ _web = web_dir()
 app.mount("/static", StaticFiles(directory=str(_web / "static")), name="static")
 _templates = Jinja2Templates(directory=str(_web / "templates"))
 
-app.include_router(graph_router)
 app.include_router(schemas_router)
-app.include_router(chat_router)
 app.include_router(play_router)
 app.include_router(studio_router)
 app.include_router(game_test_router)
@@ -63,6 +60,7 @@ app.include_router(game_log_router)
 # Serve Godot web exports dynamically — new games are available immediately
 # without server restart. Uses a catch-all route instead of static mounts.
 _godot_games = _pathlib.Path(__file__).resolve().parents[3] / "games"
+_output_dir = _pathlib.Path(__file__).resolve().parents[3] / "output"
 
 
 @app.get("/godot/{game_name}/{file_path:path}")
@@ -148,38 +146,63 @@ async def gallery_page(request: Request) -> HTMLResponse:
     return _templates.TemplateResponse(request, "gallery.html")
 
 
+def _has_trace(name: str) -> bool:
+    return (_output_dir / name / "trace.json").exists()
+
+
 @app.get("/api/gallery/games")
 async def gallery_games() -> JSONResponse:
-    """List all playable games — Godot web exports + pygame games."""
+    """List all games — built (Godot/pygame) + spec-only (trace exists, no build yet)."""
     games = []
+    seen: set[str] = set()
 
     # Godot web exports (GPU-accelerated, runs in browser)
-    for gdir in sorted(_godot_games.iterdir()):
-        export_dir = gdir / "export"
-        if export_dir.is_dir() and (export_dir / "index.html").exists():
-            games.append(
-                {
-                    "name": gdir.name,
-                    "engine": "godot",
-                    "url": f"/godot/{gdir.name}/",
-                    "test_url": f"/test/{gdir.name}",
-                    "log_url": f"/log/{gdir.name}",
-                    "thumb": None,
-                }
-            )
+    if _godot_games.exists():
+        for gdir in sorted(_godot_games.iterdir()):
+            export_dir = gdir / "export"
+            if export_dir.is_dir() and (export_dir / "index.html").exists():
+                games.append(
+                    {
+                        "name": gdir.name,
+                        "engine": "godot",
+                        "url": f"/godot/{gdir.name}/",
+                        "test_url": f"/test/{gdir.name}",
+                        "log_url": f"/log/{gdir.name}" if _has_trace(gdir.name) else None,
+                        "thumb": None,
+                    }
+                )
+                seen.add(gdir.name)
 
-    # Pygame games (streamed via WebSocket — heavier on server)
-    for gdir in sorted(_godot_games.iterdir()):
-        game_py = gdir / "game.py"
-        if game_py.exists() and not (gdir / "export" / "index.html").exists():
-            games.append(
-                {
-                    "name": gdir.name,
-                    "engine": "pygame",
-                    "url": f"/play/{gdir.name}",
-                    "thumb": None,
-                }
-            )
+        # Pygame games (streamed via WebSocket — heavier on server)
+        for gdir in sorted(_godot_games.iterdir()):
+            game_py = gdir / "game.py"
+            if game_py.exists() and not (gdir / "export" / "index.html").exists():
+                games.append(
+                    {
+                        "name": gdir.name,
+                        "engine": "pygame",
+                        "url": f"/play/{gdir.name}",
+                        "log_url": f"/log/{gdir.name}" if _has_trace(gdir.name) else None,
+                        "thumb": None,
+                    }
+                )
+                seen.add(gdir.name)
+
+    # Spec-only games — trace exists but no build artifact yet (in-progress pipeline run)
+    if _output_dir.exists():
+        for odir in sorted(_output_dir.iterdir()):
+            if odir.name in seen or not odir.is_dir():
+                continue
+            if (odir / "trace.json").exists():
+                games.append(
+                    {
+                        "name": odir.name,
+                        "engine": "spec",
+                        "url": None,
+                        "log_url": f"/log/{odir.name}",
+                        "thumb": None,
+                    }
+                )
 
     return JSONResponse({"games": games})
 

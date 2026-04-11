@@ -38,14 +38,144 @@ VALID_KEYS = {
 }
 
 
-def validate_hlr(hlr: GameIdentity, dynamic_fields: list[SchemaField] | None = None) -> list[str]:
+def validate_hlr(
+    hlr: GameIdentity,
+    dynamic_fields: list[SchemaField] | None = None,
+    hlt_provided: bool = False,
+) -> list[str]:
     errors: list[str] = []
     errors.extend(_check_fsm(hlr))
     errors.extend(_check_scenes(hlr))
     errors.extend(_check_enums(hlr))
+    errors.extend(_check_game_systems_annotations(hlr, hlt_provided))
+    errors.extend(_check_mechanic_specs(hlr))
     errors.extend(_check_rules(hlr))
     errors.extend(_check_duplicates(hlr))
     errors.extend(_check_dynamic_fields_present(hlr, dynamic_fields or []))
+    return errors
+
+
+def _check_mechanic_specs(hlr: GameIdentity) -> list[str]:
+    """Every (new) system must have a mechanic_spec. Every spec must be complete enough
+    that MLR/DLR can build without guessing."""
+    errors: list[str] = []
+
+    # Find all (new) systems from value_template_origins
+    new_systems: list[str] = []
+    for e in hlr.enums:
+        if e.name != "game_systems":
+            continue
+        for v in e.values:
+            if e.value_template_origins.get(v, "") == "(new)":
+                new_systems.append(v)
+
+    if not new_systems:
+        return errors  # nothing custom to validate
+
+    specs_by_name = {m.system_name: m for m in hlr.mechanic_specs}
+    hud_values = set(hlr.get_enum("hud_elements"))
+
+    for sys_name in new_systems:
+        spec = specs_by_name.get(sys_name)
+        if spec is None:
+            errors.append(
+                f"mechanic_specs missing for '(new)' system '{sys_name}' — "
+                f"downstream phases have no way to scaffold it"
+            )
+            continue
+
+        if not spec.properties:
+            errors.append(f"mechanic_specs['{sys_name}'] has no properties — "
+                          f"a working feature needs at least one state variable")
+        if not spec.interactions:
+            errors.append(f"mechanic_specs['{sys_name}'] has no interactions — "
+                          f"a working feature needs at least one trigger→effect wire")
+
+        for i, p in enumerate(spec.properties):
+            if not p.name or not p.type or not p.role:
+                errors.append(f"mechanic_specs['{sys_name}'].properties[{i}] missing required "
+                              f"field (name/type/role)")
+            if p.role not in {"fighter", "projectile", "hud", "game", "stage", "character"}:
+                errors.append(f"mechanic_specs['{sys_name}'].properties[{i}] has invalid role "
+                              f"'{p.role}' — must be fighter/projectile/hud/game/stage/character")
+            if not p.written_by:
+                errors.append(f"mechanic_specs['{sys_name}'].properties[{i}].{p.name} has empty "
+                              f"written_by — no system writes it, it can never change")
+
+        for i, h in enumerate(spec.hud_entities):
+            if h.name not in hud_values:
+                errors.append(f"mechanic_specs['{sys_name}'].hud_entities[{i}].name '{h.name}' "
+                              f"not declared in hud_elements enum")
+            if not h.visual_states:
+                errors.append(f"mechanic_specs['{sys_name}'].hud_entities[{i}]'{h.name}' missing "
+                              f"visual_states — user cannot distinguish feature states")
+            if not h.reads:
+                errors.append(f"mechanic_specs['{sys_name}'].hud_entities[{i}]'{h.name}' reads "
+                              f"no properties — it will never update")
+
+        # Spawn/destroy targets must reference a declared entity enum value
+        game_objects = set(hlr.get_enum("game_objects"))
+        spawnable = game_objects | hud_values | set(hlr.get_enum("characters"))
+
+        for i, it in enumerate(spec.interactions):
+            if not it.trigger or not it.effects:
+                errors.append(f"mechanic_specs['{sys_name}'].interactions[{i}] missing trigger "
+                              f"or effects")
+            for j, eff in enumerate(it.effects):
+                if eff.verb not in _MLR_VALID_VERBS:
+                    errors.append(
+                        f"mechanic_specs['{sys_name}'].interactions[{i}].effects[{j}] "
+                        f"verb '{eff.verb}' not in MLR allowed verbs: "
+                        f"{sorted(_MLR_VALID_VERBS)}"
+                    )
+                if eff.verb in {"spawn", "destroy"}:
+                    if eff.target not in spawnable:
+                        errors.append(
+                            f"mechanic_specs['{sys_name}'].interactions[{i}].effects[{j}] "
+                            f"{eff.verb} target '{eff.target}' is not declared in "
+                            f"game_objects, hud_elements, or characters enum"
+                        )
+                elif "." not in eff.target:
+                    errors.append(
+                        f"mechanic_specs['{sys_name}'].interactions[{i}].effects[{j}] "
+                        f"target '{eff.target}' must be 'entity.property' or 'role.property' "
+                        f"format (verb={eff.verb})"
+                    )
+
+    return errors
+
+
+# Mirrors the set in mlr_validator.VALID_VERBS — kept in sync to reject invalid
+# verbs at HLR time so we never ship a mechanic_spec the MLR validator will trip on.
+_MLR_VALID_VERBS = {
+    "set", "subtract", "add", "spawn", "destroy", "set_state", "apply",
+    "move", "reset", "increment", "decrement", "enable", "disable",
+}
+
+
+def _check_game_systems_annotations(hlr: GameIdentity, hlt_provided: bool) -> list[str]:
+    """Every game_systems value must have a rich value_description.
+    When HLT was provided, every value must also have a value_template_origins entry."""
+    errors: list[str] = []
+    for e in hlr.enums:
+        if e.name != "game_systems":
+            continue
+        for v in e.values:
+            desc = e.value_descriptions.get(v, "")
+            if not desc:
+                errors.append(f"game_systems value '{v}' missing value_descriptions entry")
+            elif len(desc) < 60:
+                errors.append(
+                    f"game_systems value '{v}' has shallow value_description "
+                    f"({len(desc)} chars) — must mention Objects, Interactions, and Effects"
+                )
+            if hlt_provided:
+                origin = e.value_template_origins.get(v, "")
+                if not origin:
+                    errors.append(
+                        f"game_systems value '{v}' missing value_template_origins entry "
+                        f"(HLT was provided — must point to an HLT system name or '(new)')"
+                    )
     return errors
 
 

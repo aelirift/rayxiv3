@@ -52,6 +52,8 @@
       text-decoration: none; display: block;
     }
     .btn-play:hover { background: #3b7; }
+    .btn-disabled { background: #333 !important; color: #777 !important; cursor: not-allowed; }
+    .btn-disabled:hover { background: #333 !important; }
 
     .btn-test {
       padding: 10px; background: #26a; color: #fff; border: none;
@@ -111,7 +113,16 @@ const emptyMsg = document.getElementById('empty-msg');
       card.className = 'game-card';
 
       const displayName = game.name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-      const engineLabel = game.engine === 'godot' ? 'Godot 4.4 (WebGL)' : 'Pygame (Streamed)';
+      const engineLabels = {
+        godot:  'Godot 4.4 (WebGL)',
+        pygame: 'Pygame (Streamed)',
+        spec:   'Spec only — pipeline in progress',
+      };
+      const engineLabel = engineLabels[game.engine] || game.engine;
+
+      const playBtn = game.url
+        ? `<a class="btn-play" href="${game.url}" target="_blank">▶ Play</a>`
+        : `<span class="btn-play btn-disabled">▶ Play (not built)</span>`;
 
       card.innerHTML = `
         <div class="card-thumb">${game.thumb ? `<img src="${game.thumb}">` : '🎮'}</div>
@@ -119,7 +130,7 @@ const emptyMsg = document.getElementById('empty-msg');
           <div class="card-name">${displayName}</div>
           <div class="card-engine">${engineLabel}</div>
           <div class="card-actions">
-            <a class="btn-play" href="${game.url}" target="_blank">▶ Play</a>
+            ${playBtn}
             ${game.test_url ? `<a class="btn-test" href="${game.test_url}" target="_blank">🧪 Test</a>` : ''}
             ${game.log_url ? `<a class="btn-log" href="${game.log_url}" target="_blank">📋 Log</a>` : ''}
           </div>

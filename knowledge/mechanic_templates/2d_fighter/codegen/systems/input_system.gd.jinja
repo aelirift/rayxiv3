@@ -1,0 +1,79 @@
+extends Node
+## Input System — reads keyboard, maps to fighter actions.
+## Processing order: 1st (before everything else)
+
+var p1_fighter: CharacterBody2D
+var game_keys: Dictionary
+
+func setup(fighter: CharacterBody2D, keys: Dictionary):
+	p1_fighter = fighter
+	game_keys = keys
+
+func process_input():
+	if not p1_fighter:
+		return
+
+	# Skip input during hitstop
+	if p1_fighter.hitstop_timer > 0:
+		return
+
+	# Movement input
+	var move_dir = 0
+	if Input.is_key_pressed(OS.find_keycode_from_string(game_keys.get("left", "A"))):
+		move_dir -= 1
+	if Input.is_key_pressed(OS.find_keycode_from_string(game_keys.get("right", "D"))):
+		move_dir += 1
+
+	# Jump
+	if Input.is_key_pressed(OS.find_keycode_from_string(game_keys.get("up", "W"))):
+		if not p1_fighter.is_airborne:
+			p1_fighter.velocity.y = p1_fighter.jump_velocity_y
+			p1_fighter.is_airborne = true
+
+	# Crouch
+	p1_fighter.is_crouching = Input.is_key_pressed(OS.find_keycode_from_string(game_keys.get("down", "S"))) and not p1_fighter.is_airborne
+
+	# Horizontal movement (walk)
+	if not p1_fighter.is_crouching and not p1_fighter.is_airborne:
+		if move_dir != 0:
+			var spd = p1_fighter.walk_speed if move_dir == p1_fighter.facing_direction else p1_fighter.back_walk_speed
+			p1_fighter.velocity.x = move_dir * spd
+		else:
+			p1_fighter.velocity.x = 0
+
+	# Push directional input into the motion buffer for special-move detection
+	_push_input_buffer(move_dir, p1_fighter.is_crouching)
+
+	# Attack input
+	var attack_keys = {
+		"lp": game_keys.get("lp", "U"), "mp": game_keys.get("mp", "I"), "hp": game_keys.get("hp", "O"),
+		"lk": game_keys.get("lk", "J"), "mk": game_keys.get("mk", "K"), "hk": game_keys.get("hk", "L"),
+	}
+	for action_name in attack_keys:
+		var key = attack_keys[action_name]
+		if Input.is_key_pressed(OS.find_keycode_from_string(key)):
+			if p1_fighter.current_action == "none" or p1_fighter.current_action == "idle":
+				var pose = "crouch_" if p1_fighter.is_crouching else ("jump_" if p1_fighter.is_airborne else "")
+				var attack_map = {"lp": "light_punch", "mp": "medium_punch", "hp": "heavy_punch",
+					"lk": "light_kick", "mk": "medium_kick", "hk": "heavy_kick"}
+				p1_fighter.current_action = pose + attack_map[action_name]
+				p1_fighter.action_frame = 0
+				p1_fighter.pending_attack_button = action_name  # consumed by special_move_system
+				break
+
+func _push_input_buffer(move_dir: int, is_crouching: bool):
+	# Compact directional code: 1=neutral, 2=down, 4=left, 6=right, 3=down-right, 1=down-left
+	var dir_code = 1  # neutral
+	if move_dir > 0 and is_crouching:
+		dir_code = 3  # down-forward (for facing right)
+	elif move_dir < 0 and is_crouching:
+		dir_code = 1  # down-back
+	elif is_crouching:
+		dir_code = 2  # down
+	elif move_dir > 0:
+		dir_code = 6  # forward
+	elif move_dir < 0:
+		dir_code = 4  # back
+	p1_fighter.input_buffer.append(dir_code)
+	if p1_fighter.input_buffer.size() > 20:
+		p1_fighter.input_buffer.pop_front()

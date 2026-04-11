@@ -1,0 +1,235 @@
+{
+  "_meta": {
+    "genre": "2d_fighter",
+    "description": "High-Level Template \u2014 for HLR reference",
+    "property_categories": {
+      "config": "Set at game start, never changes at runtime. DLR fills value. @export var in Godot.",
+      "state": "Changes at runtime. DLR fills INITIAL value. var in Godot. Must specify written_by system.",
+      "derived": "Computed from other properties. Never stored. Build generates getter. Must specify formula."
+    },
+    "scope_rules": {
+      "role_generic": "Same property structure for ALL instances of this role. Traced once.",
+      "instance_unique": "Per-instance. Special moves, character-specific values."
+    },
+    "level": "HLT"
+  },
+  "roles": {
+    "fighter": {
+      "description": "Any playable or CPU-controlled character in a fighting game",
+      "godot_base_node": "CharacterBody2D",
+      "sub_roles": [
+        "playable_fighter",
+        "cpu_fighter"
+      ],
+      "scene_acquisition": {"method": "nodes_in_scene", "pattern": "p*_fighter"}
+    },
+    "projectile": {
+      "description": "Spawned ranged attack that travels independently",
+      "godot_base_node": "Area2D",
+      "scene_acquisition": {"method": "runtime_array"}
+    },
+    "hud_bar": {
+      "description": "Bar display (health, stun, super meter)",
+      "godot_base_node": "ProgressBar",
+      "scene_acquisition": {"method": "nodes_in_scene", "pattern": "*_bar"}
+    },
+    "hud_text": {
+      "description": "Text display (timer, round counter, labels)",
+      "godot_base_node": "Label",
+      "scene_acquisition": {"method": "nodes_in_scene", "pattern": "*_display"}
+    },
+    "stage": {
+      "description": "Background arena",
+      "godot_base_node": "Sprite2D",
+      "scene_acquisition": {"method": "named_node", "node_name": "Background"}
+    }
+  },
+  "systems": {
+    "health_system": {
+      "description": "Tracks fighter HP. Objects: fighter, hud_bar. Interactions: combat_system subtracts damage from current_health on hit, round_system reads is_ko to detect round end, hud_bar reads health_percent for fill display. Effects: subtract current_health, set is_ko when health reaches zero, update display_value on hud_bar.",
+      "scope": "role_generic",
+      "phase": "resolution"
+    },
+    "combat_system": {
+      "description": "Hit detection, damage calculation, hitstop freeze, pushback. Objects: fighter, projectile, hitbox, hurtbox. Interactions: reads action_frame and current_action to determine active hitboxes, checks hit_this_frame against opponent hurtbox, applies damage and hitstun, triggers hitstop freeze on both attacker and defender. Effects: subtract current_health, set hitstop_timer and hitstun_timer, apply pushback_velocity.",
+      "scope": "role_generic",
+      "phase": "resolution"
+    },
+    "movement_system": {
+      "description": "Walking, jumping, crouching, facing direction, gravity. Objects: fighter, stage. Interactions: reads input direction to determine walk/jump/crouch, physics_system applies gravity and updates position, clamps to stage bounds, always faces opponent for forward/back determination. Effects: set position, set velocity, set facing_direction, set is_airborne, set is_crouching.",
+      "scope": "role_generic",
+      "phase": "physics"
+    },
+    "blocking_system": {
+      "description": "Stand block, crouch block, chip damage, blockstun. Objects: fighter. Interactions: detects holding back away from opponent, distinguishes stand vs crouch block, combat_system applies reduced (chip) damage when blocking, sets blockstun_timer on block. Effects: set is_blocking, set block_type, set blockstun_timer, apply chip_damage_multiplier.",
+      "scope": "role_generic",
+      "phase": "physics"
+    },
+    "stun_system": {
+      "description": "Stun meter accumulation, dizzy state, stun recovery. Objects: fighter. Interactions: increments stun_meter on each hit, when meter exceeds threshold sets is_stunned, stun_timer counts down dizzy duration, input_system blocks input while stunned. Effects: increment stun_meter, set is_stunned when threshold exceeded, set stun_timer.",
+      "scope": "role_generic",
+      "phase": "resolution"
+    },
+    "combo_system": {
+      "description": "Hit counting, damage scaling, juggle tracking. Objects: fighter. Interactions: increments combo_count on consecutive hits before recovery, scales combo_damage_scaling down per hit in combo, tracks juggle_count for airborne hits. Effects: increment combo_count, set combo_damage_scaling, increment juggle_count.",
+      "scope": "role_generic",
+      "phase": "resolution"
+    },
+    "projectile_system": {
+      "description": "Projectile spawning, travel, collision, despawn. Objects: fighter, projectile. Interactions: spawns projectile from fighter on special move input, tracks projectile_on_screen count limited by projectile_limit, collision_system detects projectile vs fighter hurtbox, despawns on hit or lifetime expiry. Effects: spawn projectile, increment projectile_on_screen, set is_firing_projectile, set owner_id, set active, increment frames_alive.",
+      "scope": "role_generic",
+      "phase": "physics"
+    },
+    "input_system": {
+      "description": "Input buffering, motion detection, action mapping. Objects: fighter, button. Interactions: reads keyboard or controller buttons, buffers last 20 directional inputs, detects motion patterns like quarter-circle-forward for special moves, maps button presses to current_action, blocked during hitstop and hitstun. Effects: set input_buffer, set current_action, increment action_frame.",
+      "scope": "role_generic",
+      "phase": "input"
+    },
+    "animation_system": {
+      "description": "State-to-animation mapping, frame timing, sprite management. Objects: fighter, sprite. Interactions: reads current_action and current_health to pick animation, advances animation_frame each tick, flips sprite_flip_h based on facing_direction, displays hit reactions, blocks, KO animations. Effects: set current_animation, increment animation_frame, set sprite_flip_h.",
+      "scope": "role_generic",
+      "phase": "display"
+    },
+    "round_system": {
+      "description": "Round management, timer countdown, win tracking, scene transitions. Objects: game, fighter, hud_text. Interactions: counts down round_timer_frames each tick, reads is_ko to detect KO, compares health on time-up to determine winner, increments round_wins, transitions between pre_round, fighting, ko, time_up, round_over states. Effects: set round_timer_frames, set round_state, increment round_wins, increment current_round.",
+      "scope": "role_generic",
+      "phase": "display"
+    },
+    "charge_system": {
+      "description": "Charge input tracking for charge-type special moves. Objects: fighter. Interactions: detects holding back or down direction, accumulates charge_frames, sets charge_ready when duration reached, releases on opposite direction + button. Effects: set charge_direction, increment charge_frames, set charge_ready.",
+      "scope": "role_generic",
+      "phase": "decision"
+    },
+    "special_move_system": {
+      "description": "Special move detection, execution, cooldowns. Objects: fighter, projectile. Instance-unique per character. Interactions: reads input_buffer for motion patterns (qcf, qcb, dp, charge), checks special_cooldown_timer, executes special move with startup/active/recovery frames, spawns projectile if move is_projectile. Effects: set current_action, set special_cooldown_timer, spawn projectile.",
+      "scope": "instance_unique",
+      "phase": "decision"
+    },
+    "ai_system": {
+      "description": "CPU opponent decision making. Objects: fighter. Interactions: reads opponent position and current_action, decides walk/attack/block/jump based on ai_aggression and ai_difficulty, delays reactions by ai_reaction_frames to feel human. Effects: set ai_decision_timer, set ai_current_plan, set current_action.",
+      "scope": "role_generic",
+      "phase": "decision"
+    },
+    "collision_system": {
+      "description": "Hitbox/hurtbox overlap detection, push-out. Objects: fighter, projectile, hitbox, hurtbox. Interactions: checks active_hitbox of attacker against hurtbox of defender, uses stand_hurtbox/crouch_hurtbox/air_hurtbox based on fighter state, pushes fighters apart on overlap to prevent intersection. Effects: set hit_this_frame, set active_hitbox, set position (push-out).",
+      "scope": "role_generic",
+      "phase": "physics"
+    }
+  },
+  "hlis_groups": [
+    {
+      "name": "combat_core",
+      "systems": [
+        "combat_system",
+        "collision_system",
+        "combo_system",
+        "blocking_system",
+        "stun_system"
+      ],
+      "rationale": "Tightly coupled damage pipeline: collision detects hits, combat applies damage/hitstun, blocking reduces damage and sets blockstun, combo tracks consecutive hits and scaling, stun accumulates from hits and feeds back into input lockout. All share fighter state around hit_this_frame, hitstun, and health modification."
+    },
+    {
+      "name": "input_and_specials",
+      "systems": [
+        "input_system",
+        "charge_system",
+        "special_move_system"
+      ],
+      "rationale": "Input buffer is consumed by charge tracking and special move motion detection. Charge system feeds charge_ready into special moves, and special moves read input_buffer for qcf/qcb/dp patterns. All three write to current_action and share the input interpretation concern."
+    },
+    {
+      "name": "movement_and_projectiles",
+      "systems": [
+        "movement_system",
+        "projectile_system"
+      ],
+      "rationale": "Movement handles fighter position/velocity/facing which projectile spawning depends on (owner position, facing_direction for projectile travel). Projectiles are spawned from fighter state set by movement."
+    },
+    {
+      "name": "health_and_round_flow",
+      "systems": [
+        "health_system",
+        "round_system"
+      ],
+      "rationale": "Round system reads is_ko from health to detect round end and compares current_health on time-up to determine winner. Health state directly drives round state transitions."
+    },
+    {
+      "name": "ai",
+      "systems": [
+        "ai_system"
+      ],
+      "rationale": "Standalone CPU decision layer that writes to current_action like input_system but is independent \u2014 reads opponent state and produces action decisions without coupling to other systems' internals."
+    },
+    {
+      "name": "animation",
+      "systems": [
+        "animation_system"
+      ],
+      "rationale": "Standalone presentation layer that reads current_action, current_health, and facing_direction to select sprites. Read-only consumer of other systems' state with no feedback into gameplay logic."
+    }
+  ],
+  "property_enums": {
+    "_comment": "Canonical value domains for string/enum properties. Any system that reads or writes these properties must use exactly these values — this is the cross-system contract. impact_seed copies these onto PropertyNode.enum_values.",
+    "fighter.current_action": [
+      "idle",
+      "walk_forward",
+      "walk_back",
+      "crouch",
+      "jump_neutral",
+      "jump_forward",
+      "jump_back",
+      "light_punch",
+      "medium_punch",
+      "heavy_punch",
+      "light_kick",
+      "medium_kick",
+      "heavy_kick",
+      "crouch_light_punch",
+      "crouch_medium_punch",
+      "crouch_heavy_punch",
+      "crouch_light_kick",
+      "crouch_medium_kick",
+      "crouch_heavy_kick",
+      "jump_light_punch",
+      "jump_medium_punch",
+      "jump_heavy_punch",
+      "jump_light_kick",
+      "jump_medium_kick",
+      "jump_heavy_kick",
+      "block_high",
+      "block_low",
+      "hit_high",
+      "hit_low",
+      "hit_airborne",
+      "stunned",
+      "ko",
+      "intro",
+      "victory",
+      "special_projectile",
+      "special_uppercut",
+      "special_spinning",
+      "throw"
+    ],
+    "fighter.block_type": ["none", "stand", "crouch"],
+    "fighter.charge_direction": ["none", "back", "down", "down_back"],
+    "game.round_state": [
+      "pre_round",
+      "fighting",
+      "ko",
+      "time_up",
+      "round_over",
+      "match_over"
+    ],
+    "fighter.ai_current_plan": [
+      "idle",
+      "approach",
+      "retreat",
+      "attack_close",
+      "attack_far",
+      "block",
+      "jump",
+      "anti_air",
+      "whiff_punish"
+    ]
+  }
+}

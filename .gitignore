@@ -8,3 +8,15 @@ logs/
 output/
 games/*/export/
 test_*.py
+
+# Session metadata (local, not for version control)
+.claude/
+.certs/
+.debug/
+
+# Per-game output dirs — only the shared asset pool (games/_lib) is tracked
+games/sf2/
+games/sf2_rage/
+games/mk/
+games/pong/
+games/templates/

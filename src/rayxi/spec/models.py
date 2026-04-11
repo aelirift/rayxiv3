@@ -44,6 +44,64 @@ class EnumDef(BaseModel):
     values: list[str]
     description: str = ""
     entity: bool = False  # True = values are instantiable objects in scenes. False = metadata/categories.
+    value_descriptions: dict[str, str] = {}  # optional per-value descriptions (e.g. for game_systems)
+    value_template_origins: dict[str, str] = {}  # debug/audit: which template system each value descended from
+
+
+# ---------------------------------------------------------------------------
+# Mechanic specs — structured representation of CUSTOM (non-template) systems
+# so MLR/DLR/DAG/Impact can consume them without losing fidelity.
+# HLR emits one per game_systems value with origin='(new)'.
+# ---------------------------------------------------------------------------
+
+
+class MechanicPropertySpec(BaseModel):
+    role: str                    # fighter | projectile | hud | game | stage
+    name: str                    # snake_case property name
+    type: str                    # int | float | bool | string | Vector2
+    scope: str = "instance"      # instance | player_slot | game | character_def
+    purpose: str = ""            # why it exists
+    written_by: list[str] = []   # systems that write it
+    read_by: list[str] = []      # systems that read it
+    reset_on: str = ""           # empty, or "round_start" / "match_start" / etc.
+
+
+class MechanicHudEntity(BaseModel):
+    name: str                    # must match an hud_elements enum value
+    godot_node: str              # Control | ProgressBar | Label | etc.
+    displays: str                # what it shows
+    reads: list[str] = []        # property names it reads
+    visual_states: str           # how user can distinguish states (e.g. "3 segments for 3 stacks")
+
+
+class MechanicEffectSpec(BaseModel):
+    verb: str                    # must be one of MLR's VALID_VERBS
+    target: str                  # entity.property or role.property
+    description: str = ""
+
+
+class MechanicInteractionSpec(BaseModel):
+    trigger: str                 # what starts this interaction
+    condition: str = ""          # guard
+    effects: list[MechanicEffectSpec] = []
+
+
+class MechanicConstant(BaseModel):
+    name: str
+    type: str                    # int | float
+    purpose: str                 # what it controls
+    value_hint: str = ""         # rough guidance for DLR, optional
+
+
+class MechanicSpec(BaseModel):
+    """Structured definition of a custom (non-template) feature.
+    Emitted by HLR for every game_systems value with value_template_origins='(new)'."""
+    system_name: str
+    summary: str = ""
+    properties: list[MechanicPropertySpec] = []
+    hud_entities: list[MechanicHudEntity] = []
+    interactions: list[MechanicInteractionSpec] = []
+    constants_for_dlr: list[MechanicConstant] = []
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +133,13 @@ class GameIdentity(BaseModel):
     win_condition: str | None = None
     kb_sources: list[str] = []
     enums: list[EnumDef] = []
+    mechanic_specs: list[MechanicSpec] = []  # structured specs for (new) systems
+
+    def mechanic_spec_for(self, system_name: str) -> MechanicSpec | None:
+        for m in self.mechanic_specs:
+            if m.system_name == system_name:
+                return m
+        return None
 
     def get_extra(self, key: str, default: Any = None) -> Any:
         if self.model_extra:

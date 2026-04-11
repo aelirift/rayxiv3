@@ -86,11 +86,16 @@ class TraceLog:
         self._emit(phase, "phase_start", "")
         _log.info("Trace: [%s] start", phase)
 
-    def phase_end(self, phase: str) -> None:
+    def phase_end(self, phase: str, artifacts: list[str] | None = None) -> None:
+        """End a phase. `artifacts` is a list of filenames (relative to output/{game}/)
+        produced by the phase — each becomes a clickable button in the log viewer."""
         start = self._phase_starts.pop(phase, None)
         duration = round(time.monotonic() - start, 1) if start else 0.0
-        self._emit(phase, "phase_end", "", duration_s=duration)
-        _log.info("Trace: [%s] end (%.1fs)", phase, duration)
+        extra: dict = {"duration_s": duration}
+        if artifacts:
+            extra["artifacts"] = list(artifacts)
+        self._emit(phase, "phase_end", "", **extra)
+        _log.info("Trace: [%s] end (%.1fs, %d artifacts)", phase, duration, len(artifacts or []))
 
     # ------------------------------------------------------------------
     # LLM calls

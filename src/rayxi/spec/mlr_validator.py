@@ -15,7 +15,7 @@ from .mlr import SceneMLR
 from .models import GameIdentity, SceneListEntry
 
 VALID_VERBS = {
-    "subtract", "add", "spawn", "destroy", "set_state", "apply",
+    "set", "subtract", "add", "spawn", "destroy", "set_state", "apply",
     "move", "reset", "increment", "decrement", "enable", "disable",
 }
 
@@ -196,11 +196,16 @@ def _check_cross_file(scene_mlr: SceneMLR) -> list[str]:
                 )
 
     # --- Interaction effect targets reference entities ---
+    # Special scope roots that aren't entities — they're global/role refs
+    GLOBAL_ROOTS = {"game", "fighter", "projectile", "hud_bar", "hud_text", "stage"}
+
     for si in scene_mlr.system_interactions:
         sp = f"{p}[{si.game_system}]"
         for idx, interaction in enumerate(si.interactions):
             for eff in interaction.effects:
                 target_root = eff.target.split(".")[0]
+                if target_root in GLOBAL_ROOTS:
+                    continue  # global scope or role ref — not an entity
                 if not _is_traceable(target_root, entity_names):
                     errors.append(
                         f"{sp} interaction[{idx}] effect target '{eff.target}' — "
@@ -256,6 +261,13 @@ def _check_cross_file(scene_mlr: SceneMLR) -> list[str]:
     return errors
 
 
+_GENERIC_COLLISION_ROOTS = {
+    "wall", "floor", "ceiling", "boundary", "screen",
+    "fighter", "fighter_body", "fighter_hitbox", "fighter_hurtbox",
+    "projectile", "enemy", "player", "hitbox", "hurtbox",
+}
+
+
 def _is_traceable(name: str, entity_names: set[str]) -> bool:
     """Check if a name is traceable to an entity. Handles compound names."""
     if name in entity_names:
@@ -269,8 +281,8 @@ def _is_traceable(name: str, entity_names: set[str]) -> bool:
     for entity in entity_names:
         if any(part in entity for part in name_parts if len(part) > 2):
             return True
-    # Special case: generic collision names like "wall", "floor" are always valid
-    if name in ("wall", "floor", "ceiling", "boundary", "screen"):
+    # Generic role/scene names the collisions prompt explicitly tells the LLM to use
+    if name in _GENERIC_COLLISION_ROOTS:
         return True
     return False
 

@@ -53,6 +53,7 @@ class PropertyNode:
     default: str = ""       # template default
     written_by: list[str] = field(default_factory=list)
     read_by: list[str] = field(default_factory=list)
+    write_verb: str = ""    # how it's written: subtract, set, set_state, increment, etc.
 
     @property
     def is_filled(self) -> bool:
@@ -215,6 +216,36 @@ class GameDAG:
 # Builder: Template + HLR → DAG
 # ---------------------------------------------------------------------------
 
+def _mechanic_fighter_property_nodes(hlr: GameIdentity) -> list[PropertyNode]:
+    """Build PropertyNodes from hlr.mechanic_specs for every fighter-role property.
+
+    These are injected into each fighter EntityNode so the DAG knows about
+    custom state (rage_stacks, rage_fill_value, is_powered_special, etc.) that
+    isn't in the template but comes from HLR-introduced features.
+    """
+    nodes: list[PropertyNode] = []
+    seen: set[str] = set()
+    for spec in hlr.mechanic_specs:
+        for p in spec.properties:
+            if p.role not in ("fighter", "character"):
+                continue
+            if p.name in seen:
+                continue
+            seen.add(p.name)
+            nodes.append(PropertyNode(
+                name=p.name,
+                type=p.type,
+                category="state",            # mechanic_spec state lives in runtime state
+                scope="role_generic",
+                source_mechanic=spec.system_name,
+                purpose=f"{p.purpose} [from {spec.system_name}]",
+                written_by=list(p.written_by),
+                read_by=list(p.read_by),
+                write_verb="set",
+            ))
+    return nodes
+
+
 def _props_to_nodes(specs: list[PropertySpec]) -> list[PropertyNode]:
     """Convert PropertySpecs from the template into PropertyNodes."""
     return [
@@ -230,6 +261,7 @@ def _props_to_nodes(specs: list[PropertySpec]) -> list[PropertyNode]:
             formula=s.formula,
             written_by=list(s.written_by),
             read_by=list(s.read_by),
+            write_verb=s.write_verb,
         )
         for s in specs
     ]
@@ -360,7 +392,8 @@ def build_dag(
         _props_to_nodes(schema.game_derived)
     )
 
-    # Fighter entities — one per character, with generic + unique props
+    # Fighter entities — one per character, with generic + unique props + mechanic_spec injections
+    mechanic_fighter_props = _mechanic_fighter_property_nodes(hlr)
     for char in hlr.get_enum("characters"):
         generic_props = _props_to_nodes(schema.fighter_schema.properties)
         unique_props = _props_to_nodes(schema.per_character_unique.get(char, []))
@@ -369,7 +402,7 @@ def build_dag(
             role="fighter",
             from_enum="characters",
             godot_node_type=schema.fighter_schema.godot_base_node or "CharacterBody2D",
-            properties=generic_props + unique_props,
+            properties=generic_props + unique_props + mechanic_fighter_props,
         )
         dag.fighter_entities[char] = entity
 
