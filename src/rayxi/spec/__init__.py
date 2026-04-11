@@ -1,10 +1,18 @@
-from .dlr import SceneDLR, run_dlr
-from .dlr_validator import validate_dlr
+"""Public exports from the spec package."""
 from .hlr import run_hlr
 from .hlr_validator import validate_hlr
-from .linker import generate_link_doc
-from .mlr import SceneMLR, run_mlr
-from .mlr_validator import validate_mlr
+from .impact_dlr import fill_dlr
+from .impact_map import (
+    Category,
+    ImpactMap,
+    PropertyNode,
+    ReadEdge,
+    Scope,
+    WriteEdge,
+    WriteKind,
+)
+from .impact_mlr import drill_down_mlr
+from .impact_seed import build_impact_seed
 from .models import (
     ActionSet,
     CollisionPair,
@@ -13,6 +21,7 @@ from .models import (
     EnumDef,
     GameIdentity,
     Interaction,
+    MechanicSpec,
     PropertyDecl,
     SceneCollisions,
     SceneFSM,
@@ -21,23 +30,27 @@ from .models import (
 
 __all__ = [
     "ActionSet",
+    "Category",
     "CollisionPair",
     "Effect",
     "EntitySpec",
     "EnumDef",
     "GameIdentity",
+    "ImpactMap",
     "Interaction",
+    "MechanicSpec",
     "PropertyDecl",
+    "PropertyNode",
+    "ReadEdge",
     "SceneCollisions",
-    "SceneDLR",
-    "SceneMLR",
     "SceneFSM",
+    "Scope",
     "SystemInteractions",
-    "generate_link_doc",
-    "run_dlr",
+    "WriteEdge",
+    "WriteKind",
+    "build_impact_seed",
+    "drill_down_mlr",
+    "fill_dlr",
     "run_hlr",
-    "run_mlr",
-    "validate_dlr",
     "validate_hlr",
-    "validate_mlr",
 ]

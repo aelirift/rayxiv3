@@ -7,14 +7,14 @@ deterministic build stages to produce a Godot web export at
 
 Stages:
   1. Bootstrap godot_dir from the genre template (copies engine scaffolding +
-     the .tscn layout; scripts/systems/ is then scrubbed so codegen owns it)
+     the .tscn layout; scripts/systems/ and scripts/characters/ are scrubbed
+     so codegen owns them)
   2. Patch project.godot (name, main_scene) and export_presets.cfg (output path)
-  3. Load spec artifacts, backfill phases from HLT if missing
-  4. codegen_runner.generate_all_systems — Python/typed/LLM per system
-  5. scene_gen.emit_scene — overwrites scenes/{main_scene}.gd deterministically
-  6. hud_gen.generate_custom_hud_widgets — LLM per mechanic_spec HUD entity
-  7. mechanic_patcher.patch_mechanic_specs — character fighter-prop injection,
-     combat damage hook
+  3. Load spec artifacts, backfill phases + enum_values from HLT if missing
+  4. character_gen.emit_all_characters — deterministic {char}.gd files from imap
+  5. codegen_runner.generate_all_systems — Python/typed/LLM per system
+  6. scene_gen.emit_scene — overwrites scenes/{main_scene}.gd deterministically
+  7. hud_gen.generate_custom_hud_widgets — LLM per mechanic_spec HUD entity
   8. godot --import + godot --export-release "Web"
 
 Usage:
@@ -329,7 +329,6 @@ async def build(
     from rayxi.build.character_gen import emit_all_characters
     from rayxi.build.codegen_runner import generate_all_systems
     from rayxi.build.hud_gen import generate_custom_hud_widgets
-    from rayxi.build.mechanic_patcher import patch_mechanic_specs
     from rayxi.build.scene_gen import emit_scene
 
     game_dir = repo_root / "output" / game_name
@@ -462,30 +461,18 @@ async def build(
     for f in hud_files:
         print(f"  wrote {f.relative_to(godot_dir)} ({f.stat().st_size} bytes)")
 
-    # --- Stage 6: mechanic_patcher (character props + combat hook) ---
-    print("\n" + "=" * 70)
-    print("Step 6: mechanic_patcher — fighter props + combat hook")
-    print("=" * 70)
-    patches = patch_mechanic_specs(godot_dir, hlr, imap=imap)
-    total_ops = sum(len(v) for v in patches.values())
-    print(f"  {total_ops} patch operation(s) across {len(patches)} file(s)")
-    for f, ops in patches.items():
-        for op in ops:
-            print(f"    ✓ {Path(f).name}: {op}")
-
-    # --- Stage 7: save manifest for inspection ---
+    # --- Stage 6: save manifest for inspection ---
     (game_dir / "codegen_manifest.json").write_text(
         json.dumps({
             "game_name": game_name,
             "genre": genre,
             "systems": manifest,
             "hud_widgets": [{"file": str(f), "strategy": "llm"} for f in hud_files],
-            "patches": patches,
             "strategy_counts": strategy_counts,
         }, indent=2)
     )
 
-    # --- Stage 8: Godot import + export ---
+    # --- Stage 7: Godot import + export ---
     print("\n" + "=" * 70)
     print("Step 7: Godot import + export")
     print("=" * 70)

@@ -151,6 +151,13 @@ Never assign `null` to a strictly-typed field — it will crash at runtime.
 `_to_string`. Those are virtual methods on `Object` and will cause "signature \
 doesn't match parent" parse errors. Use prefixes like `_calculate_`, `_update_`, \
 `_apply_` instead.
+9. **Enum sentinel values — use the explicit unset string, NEVER empty string.** \
+If a property has enum_values and one of them is `none`, `idle`, `off`, \
+`inactive`, or similar, THAT is the unset state. NEVER write \
+`fighter.block_type = ""` or `fighter.current_action = ""` — always use the \
+declared unset value like `fighter.block_type = "none"`. Same for comparisons: \
+check against `"none"`, not `""`. This is the #1 source of enum drift and the \
+validator will fail your script if you write empty strings to enum properties.
 
 ## CRITICAL: rich trace logging
 
@@ -496,14 +503,28 @@ def _validate_property_access(
     # --- 2) Enum value drift ---
     # Scan for `<entity_var>.<enum_prop>` comparisons and assignments; the
     # value must be one of the declared enum strings.
+    _SENTINEL_NAMES = ("none", "idle", "off", "inactive", "unset", "default")
+
+    def _suggest_fix(literal: str, allowed: set[str]) -> str:
+        """Suggest the closest valid enum value for a drift case."""
+        # Empty string → the canonical "unset" sentinel (none/idle/off).
+        if literal == "":
+            for name in _SENTINEL_NAMES:
+                if name in allowed:
+                    return f'"{name}"'
+        # Substring match: "walk" → "walk_forward"
+        lit_lower = literal.lower()
+        for val in sorted(allowed):
+            if lit_lower and lit_lower in val.lower():
+                return f'"{val}"'
+        # Fallback: first value in the allowed set.
+        return f'"{sorted(allowed)[0]}"' if allowed else "?"
+
     enum_violations: list[str] = []
     for pid, allowed_values in enum_domains.items():
-        # pid is like "fighter.current_action" — split into owner, prop
         if "." not in pid:
             continue
         owner, prop = pid.split(".", 1)
-        # For each comparison like `var.prop == "..."` or assignment
-        # `var.prop = "..."`, check the literal against allowed_values.
         cmp_re = re.compile(
             rf'\b(\w+)\.{re.escape(prop)}\s*(?:==|!=|=)\s*"([^"]*)"'
         )
@@ -512,9 +533,11 @@ def _validate_property_access(
             if var_name not in entity_vars:
                 continue
             if literal not in allowed_values:
+                suggestion = _suggest_fix(literal, allowed_values)
                 enum_violations.append(
-                    f"  - {var_name}.{prop} matches \"{literal}\" but "
-                    f"'{pid}' enum is {sorted(allowed_values)}"
+                    f"  - {var_name}.{prop} uses \"{literal}\" — "
+                    f"USE {suggestion} INSTEAD. "
+                    f"Full enum: {sorted(allowed_values)}"
                 )
             if len(enum_violations) >= 8:
                 break
@@ -527,8 +550,10 @@ def _validate_property_access(
         errors.append("Enum-value drift — string literals don't match the canonical set:")
         errors.extend(enum_violations)
         errors.append(
-            "Use the exact enum_values declared in property_details. These are "
-            "the authoritative cross-system contract for string-valued properties."
+            "CRITICAL: NEVER use empty string \"\" or null for enum properties. "
+            "If the enum has a 'none'/'idle'/'off' value, use THAT as the "
+            "explicit unset state. If you're comparing for 'no value', compare "
+            "against the canonical unset string — not against \"\"."
         )
 
     if not errors:
@@ -611,12 +636,19 @@ async def _generate_system_via_llm(
     # the canonical string set. Any `fighter.current_action`-style handoff
     # with enum_values must use EXACTLY these strings.
     property_details = slice_data.get("property_details", {}) or {}
+    _SENTINELS = ("none", "idle", "off", "inactive", "unset", "default")
     enum_lines: list[str] = []
     for pid, detail in sorted(property_details.items()):
         values = detail.get("enum_values")
-        if values:
-            enum_lines.append(f"- **`{pid}`** (type `{detail['type']}`) must be one of:")
-            enum_lines.extend(f"    - `{v}`" for v in values)
+        if not values:
+            continue
+        # Flag the unset sentinel (if any) so the LLM knows what "no value" looks like.
+        sentinel = next((v for v in values if v.lower() in _SENTINELS), None)
+        header = f"- **`{pid}`** (type `{detail['type']}`) must be one of:"
+        if sentinel:
+            header += f"  ← unset value is `\"{sentinel}\"` (use this for no-state, NEVER `\"\"`)"
+        enum_lines.append(header)
+        enum_lines.extend(f"    - `{v}`" for v in values)
     if enum_lines:
         base_prompt_parts.append(
             "## Enum-valued properties — use EXACTLY these string values\n"
@@ -624,7 +656,8 @@ async def _generate_system_via_llm(
             "map. When you write a string to one of these, use ONE of the listed values "
             "verbatim. When you read from one of these, your pattern matches must use "
             "the same values. NEVER invent values like `\"walk\"` when the enum says "
-            "`\"walk_forward\"`, or `\"kick\"` when the enum says `\"light_kick\"`.\n\n"
+            "`\"walk_forward\"`, and NEVER use empty string `\"\"` — use the explicit "
+            "unset sentinel (`\"none\"`, `\"idle\"`, etc.) when the enum declares one.\n\n"
             + "\n".join(enum_lines)
         )
 
