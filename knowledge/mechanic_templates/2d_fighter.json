@@ -160,7 +160,7 @@
             "read_by": [
               "combat_system",
               "input_system",
-              "physics_system",
+              "movement_system",
               "animation_system"
             ],
             "purpose": "Frames remaining in hitstop freeze",
@@ -197,7 +197,7 @@
             "initial": 0.0,
             "written_by": "combat_system",
             "read_by": [
-              "physics_system"
+              "movement_system"
             ],
             "purpose": "Horizontal knockback velocity from hit/block",
             "write_verb": "set"
@@ -240,7 +240,7 @@
       }
     },
     "movement_system": {
-      "description": "Walking, jumping, crouching, facing direction, gravity. Objects: fighter, stage. Interactions: reads input direction to determine walk/jump/crouch, physics_system applies gravity and updates position, clamps to stage bounds, always faces opponent for forward/back determination. Effects: set position, set velocity, set facing_direction, set is_airborne, set is_crouching.",
+      "description": "Walking, jumping, crouching, facing direction, gravity. Objects: fighter, stage. Interactions: reads input direction to determine walk/jump/crouch, movement_system applies gravity and updates position, clamps to stage bounds, always faces opponent for forward/back determination. Effects: set position, set velocity, set facing_direction, set is_airborne, set is_crouching.",
       "contributes_to_fighter": {
         "config": [
           {
@@ -279,7 +279,7 @@
             "name": "position",
             "type": "Vector2",
             "initial": "Vector2(200, 380)",
-            "written_by": "physics_system",
+            "written_by": "movement_system",
             "read_by": [
               "collision_system",
               "animation_system",
@@ -292,9 +292,9 @@
             "name": "velocity",
             "type": "Vector2",
             "initial": "Vector2(0, 0)",
-            "written_by": "physics_system",
+            "written_by": "movement_system",
             "read_by": [
-              "physics_system"
+              "movement_system"
             ],
             "purpose": "Current velocity",
             "write_verb": "set"
@@ -317,7 +317,7 @@
             "name": "is_airborne",
             "type": "bool",
             "initial": false,
-            "written_by": "physics_system",
+            "written_by": "movement_system",
             "read_by": [
               "input_system",
               "combat_system",
@@ -390,12 +390,18 @@
             "name": "can_block",
             "type": "bool",
             "default": true,
+            "read_by": [
+              "blocking_system"
+            ],
             "purpose": "Whether this fighter can block (false for some bosses)"
           },
           {
             "name": "chip_damage_multiplier",
             "type": "float",
             "default": 0.25,
+            "read_by": [
+              "combat_system"
+            ],
             "purpose": "Damage taken when blocking (fraction of full damage)"
           }
         ],
@@ -667,7 +673,7 @@
             "name": "position",
             "type": "Vector2",
             "initial": "Vector2(0, 0)",
-            "written_by": "physics_system",
+            "written_by": "projectile_system",
             "read_by": [
               "collision_system",
               "animation_system"
@@ -693,7 +699,7 @@
             "initial": true,
             "written_by": "projectile_system",
             "read_by": [
-              "physics_system",
+              "projectile_system",
               "collision_system"
             ],
             "purpose": "Still alive",
@@ -703,7 +709,7 @@
             "name": "frames_alive",
             "type": "int",
             "initial": 0,
-            "written_by": "physics_system",
+            "written_by": "projectile_system",
             "read_by": [
               "projectile_system"
             ],
@@ -723,7 +729,8 @@
             "initial": "[]",
             "written_by": "input_system",
             "read_by": [
-              "input_system"
+              "input_system",
+              "blocking_system"
             ],
             "purpose": "Last 20 directional inputs with timestamps",
             "write_verb": "set"
@@ -736,7 +743,8 @@
             "read_by": [
               "combat_system",
               "animation_system",
-              "movement_system"
+              "movement_system",
+              "blocking_system"
             ],
             "purpose": "Currently executing action",
             "write_verb": "set_state"
@@ -949,7 +957,7 @@
             "read_by": [
               "input_system",
               "combat_system",
-              "physics_system"
+              "movement_system"
             ],
             "purpose": "pre_round/fighting/ko/time_up/round_over/match_over",
             "write_verb": "set_state"

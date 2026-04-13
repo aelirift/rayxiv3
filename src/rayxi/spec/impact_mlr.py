@@ -22,6 +22,7 @@ import json
 import logging
 from pathlib import Path
 
+from rayxi.llm.json_tools import parse_json_response
 from rayxi.llm.callers import CallerRouter
 from rayxi.llm.protocol import LLMCaller
 from rayxi.trace import get_trace
@@ -76,7 +77,7 @@ You MUST NOT:
 All formulas are typed JSON expressions, never prose:
 
   Literal:  {"kind": "literal", "type": "int|float|bool", "value": 3}
-  Ref:      {"kind": "ref", "path": "fighter.current_hp"}
+  Ref:      {"kind": "ref", "path": "fighter.current_health"}
   BinOp:    {"kind": "op", "op": "add|sub|mul|div|mod|lt|le|gt|ge|eq|ne|and|or",
              "left": <Expr>, "right": <Expr>}
   FnCall:   {"kind": "call", "fn": "clamp|min|max|abs|floor|ceil|sign|not", "args": [<Expr>, ...]}
@@ -127,6 +128,10 @@ Rules:
 - DO NOT fill formulas here — DLR fills them later.
 - scene_scope is MANDATORY for every new write/read — omit only if truly every scene.
 - Do not echo the existing graph back. Only include NEW entries.
+- Reuse the exact property ids already present in the slice. Do NOT add duplicate
+  alias families such as `fighter.current_hp`/`fighter.max_hp` when the graph
+  already uses `fighter.current_health`/`fighter.max_health`, and do not invent
+  alternate enum strings for the same concept.
 - If no refinements are needed, return empty arrays but still include the system name.
 - Output ONLY the JSON object. No markdown, no code fences, no explanation.
 """
@@ -193,14 +198,14 @@ async def _call_system(
         if trace:
             cid = trace.llm_start("mlr", label, caller_name, len(prompt))
             trace.llm_end(cid, output_chars=len(cached), cache_hit=True)
-        return json.loads(cached)
+        return parse_json_response(cached)
 
     last_err = None
     for attempt in range(3):
         cid = trace.llm_start("mlr", label, caller_name, len(prompt)) if trace else ""
         try:
             raw = await caller(MLR_SYSTEM_PROMPT, prompt, json_mode=True, label=label)
-            parsed = json.loads(raw)
+            parsed = parse_json_response(raw)
             _cache_put(key, raw)
             if trace:
                 trace.llm_end(cid, output_chars=len(raw))

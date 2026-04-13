@@ -61,6 +61,7 @@ def _build_key_map() -> dict:
         "KeyD": pygame.K_d,
         "KeyW": pygame.K_w,
         "KeyQ": pygame.K_q,
+        "KeyU": pygame.K_u,
         "KeyE": pygame.K_e,
         "KeyR": pygame.K_r,
         "KeyF": pygame.K_f,
@@ -69,6 +70,7 @@ def _build_key_map() -> dict:
         "KeyJ": pygame.K_j,
         "KeyK": pygame.K_k,
         "KeyL": pygame.K_l,
+        "KeyO": pygame.K_o,
         "KeyP": pygame.K_p,
         "Digit1": pygame.K_1,
         "Digit2": pygame.K_2,
@@ -619,8 +621,8 @@ function drawFrame(b64) {
 const FORWARD_KEYS = new Set([
   'ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space','Enter','Escape',
   'ShiftLeft','ShiftRight','ControlLeft','ControlRight','AltLeft','AltRight',
-  'KeyZ','KeyX','KeyC','KeyA','KeyS','KeyD','KeyW','KeyQ','KeyE','KeyR',
-  'KeyF','KeyG','KeyH','KeyJ','KeyK','KeyL','KeyP',
+  'KeyZ','KeyX','KeyC','KeyA','KeyS','KeyD','KeyW','KeyQ','KeyU','KeyE','KeyR',
+  'KeyF','KeyG','KeyH','KeyJ','KeyK','KeyL','KeyO','KeyP',
   'Digit1','Digit2','Digit3','Digit4','Digit5',
   'Backspace','Tab','Comma','Period','Slash',
 ]);

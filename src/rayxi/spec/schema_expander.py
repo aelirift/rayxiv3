@@ -16,6 +16,7 @@ import json
 import logging
 
 from rayxi.knowledge import KnowledgeContext
+from rayxi.llm.json_tools import parse_json_response
 from rayxi.llm.protocol import LLMCaller
 
 from .models import SchemaField
@@ -95,7 +96,7 @@ async def expand_schema(
     _log.info("Schema expander: sending to LLM (%d chars)", len(full_prompt))
 
     raw = await caller(EXPANDER_SYSTEM_PROMPT, full_prompt, json_mode=True)
-    parsed = json.loads(raw)
+    parsed = parse_json_response(raw)
 
     fields = [SchemaField.model_validate(f) for f in parsed.get("proposed_fields", [])]
     reasoning = parsed.get("reasoning", "")

@@ -16,12 +16,14 @@ We parse and validate the Expr trees before merging back.
 from __future__ import annotations
 
 import asyncio
+import ast
 import hashlib
 import json
 import logging
 from pathlib import Path
 
 from rayxi.llm.callers import CallerRouter
+from rayxi.llm.json_tools import parse_json_response
 from rayxi.llm.protocol import LLMCaller
 from rayxi.trace import get_trace
 
@@ -42,13 +44,14 @@ Fill EVERY unfilled property with a typed initial_value (or derivation for \
 derived nodes) using the JSON expression grammar:
 
   Literal:  {"kind": "literal", "type": "int|float|bool|string", "value": ...}
-  Ref:      {"kind": "ref", "path": "fighter.max_hp" | "const.foo"}
+  Ref:      {"kind": "ref", "path": "fighter.max_health" | "const.foo"}
   BinOp:    {"kind": "op", "op": "add|sub|mul|div|...", "left": <Expr>, "right": <Expr>}
   FnCall:   {"kind": "call", "fn": "clamp|min|max|abs|...", "args": [<Expr>, ...]}
   Cond:     {"kind": "cond", "condition": <Expr>, "then_val": <Expr>, "else_val": <Expr>}
 
-Use values consistent with the game genre (SF2-style fighter: ~1000 HP, 60 fps, \
-Vector2(x,y) for positions, hex colors for HUD).
+Infer scales and defaults from the supplied systems, properties, constants, \
+and game rules. Keep all values internally consistent with the actual req \
+artifacts instead of borrowing assumptions from unrelated games.
 
 Output format:
 
@@ -88,7 +91,7 @@ expression applied when the edge fires.
 ## Expression grammar (JSON — no prose math anywhere)
 
   Literal:  {"kind": "literal", "type": "int|float|bool|string", "value": 3}
-  Ref:      {"kind": "ref", "path": "fighter.current_hp" | "const.max_rage_stacks" | "event.damage_taken"}
+  Ref:      {"kind": "ref", "path": "fighter.current_health" | "const.max_rage_stacks" | "event.damage_taken"}
   BinOp:    {"kind": "op", "op": "add|sub|mul|div|mod|lt|le|gt|ge|eq|ne|and|or",
              "left": <Expr>, "right": <Expr>}
   FnCall:   {"kind": "call", "fn": "clamp|min|max|abs|floor|ceil|sign|not", "args": [<Expr>, ...]}
@@ -96,22 +99,22 @@ expression applied when the edge fires.
 
 Examples:
 
-  # current_hp starts at max_hp
-  "initial_value": {"kind": "ref", "path": "fighter.max_hp"}
+  # current_health starts at max_health
+  "initial_value": {"kind": "ref", "path": "fighter.max_health"}
 
-  # current_hp decreases by incoming damage (formula for combat_system's write)
+  # current_health decreases by incoming damage (formula for combat_system's write)
   "formula": {"kind": "op", "op": "sub",
-              "left": {"kind": "ref", "path": "fighter.current_hp"},
+              "left": {"kind": "ref", "path": "fighter.current_health"},
               "right": {"kind": "ref", "path": "event.damage_taken"}}
 
   # rage_stacks at round start: 0
   "initial_value": {"kind": "literal", "type": "int", "value": 0}
 
-  # hp_bar.fill_percent = clamp(current_hp / max_hp, 0, 1)
+  # hp_bar.fill_percent = clamp(current_health / max_health, 0, 1)
   "derivation": {"kind": "call", "fn": "clamp", "args": [
     {"kind": "op", "op": "div",
-     "left": {"kind": "ref", "path": "fighter.current_hp"},
-     "right": {"kind": "ref", "path": "fighter.max_hp"}},
+     "left": {"kind": "ref", "path": "fighter.current_health"},
+     "right": {"kind": "ref", "path": "fighter.max_health"}},
     {"kind": "literal", "type": "float", "value": 0.0},
     {"kind": "literal", "type": "float", "value": 1.0}
   ]}
@@ -163,9 +166,52 @@ Rules:
 - EVERY write edge in your slice must have EITHER a `formula` (typed expression) OR a `procedural_note` (prose) — never leave a write edge empty.
 - Use `procedural_note` ONLY for operations that genuinely cannot be expressed as a pure expression: circular buffers, multi-step state machines, rect2 updates, input-buffer ops, hitbox activation by frame index. Prefer `formula` whenever possible.
 - Use the mechanic_spec constants as `const.<name>` refs where applicable.
-- Use frame/balance values consistent with the game genre (SF2-style fighter: ~1000 HP, 60 fps, damage 20-120).
+- Reuse the exact property ids already present in the slice. Do NOT create or
+  reinforce duplicate alias families like `current_hp`/`max_hp` if the slice
+  already uses `current_health`/`max_health`.
+- Infer frame, timing, distance, damage, health, speed, and HUD scales from the
+  provided systems, objects, constants, and global rules. Keep values internally
+  consistent with this game's req artifacts rather than with any named reference game.
 - Output ONLY the JSON. No markdown, no explanation.
 """
+
+
+def _contextual_value_guidance(
+    system: str,
+    slice_ctx: dict,
+    hlr: GameIdentity,
+    mechanic_spec: MechanicSpec | None = None,
+) -> str:
+    spec_json = mechanic_spec.model_dump(mode="json") if mechanic_spec is not None else {}
+    context_blob = json.dumps(
+        {
+            "system": system,
+            "slice": slice_ctx,
+            "global_rules": hlr.global_rules,
+            "mechanic_spec": spec_json,
+        },
+        default=str,
+    ).lower()
+    guidance: list[str] = [
+        "- Base every scale and default on the supplied objects, scenes, mechanics, systems, and constants."
+    ]
+    if any(token in context_blob for token in ("health", "damage", "projectile", "block", "hitbox", "hurtbox", "combo", "rage")):
+        guidance.append(
+            "- For combat-like mechanics, keep health, damage, cooldown, projectile, and HUD values internally consistent across the linked properties."
+        )
+    if any(token in context_blob for token in ("race", "lap", "checkpoint", "vehicle", "kart", "drift", "boost", "position_rank", "item_box", "camera")):
+        guidance.append(
+            "- For traversal or race-like mechanics, keep track coordinates, speed caps, boost windows, checkpoint progress, laps, and HUD positions mutually consistent."
+        )
+    if any(token in context_blob for token in ("hud", "bar", "meter", "display", "minimap", "color")):
+        guidance.append(
+            "- For HUD and presentation properties, keep colors, layout positions, and fill ratios aligned with the state properties they represent."
+        )
+    if len(guidance) == 1:
+        guidance.append(
+            "- Prefer neutral, mechanics-derived values and formulas over genre or franchise conventions that are not present in the req artifacts."
+        )
+    return "\n".join(guidance)
 
 
 def _cache_key(system: str, slice_json: str, spec_json: str) -> str:
@@ -205,6 +251,10 @@ async def _call_dlr_system(
             f"## Mechanic constants you must fill (from mechanic_spec)\n"
             f"```json\n{json.dumps([c.model_dump() for c in mechanic_spec.constants_for_dlr], indent=2)}\n```"
         )
+    parts.append(
+        "## Value guidance\n"
+        + _contextual_value_guidance(system, slice_ctx, hlr, mechanic_spec)
+    )
     if kb_text and kb_text != "{}":
         parts.append(f"## KB Game Data (reference values)\n```json\n{kb_text[:8000]}\n```")
     prompt = "\n\n".join(parts)
@@ -220,14 +270,14 @@ async def _call_dlr_system(
         if trace:
             cid = trace.llm_start("dlr", label, caller_name, len(prompt))
             trace.llm_end(cid, output_chars=len(cached), cache_hit=True)
-        return json.loads(cached)
+        return parse_json_response(cached)
 
     last_err = None
     for attempt in range(3):
         cid = trace.llm_start("dlr", label, caller_name, len(prompt)) if trace else ""
         try:
             raw = await caller(DLR_SYSTEM_PROMPT, prompt, json_mode=True, label=label)
-            parsed = json.loads(raw)
+            parsed = parse_json_response(raw)
             _cache_put(key, raw)
             if trace:
                 trace.llm_end(cid, output_chars=len(raw))
@@ -337,6 +387,156 @@ def _merge_constants(mech_constants: dict, system: str, result: dict) -> int:
     return added
 
 
+def _literal_expr_for_value(type_name: str, value):
+    normalized = (type_name or "").lower()
+    if normalized in {"int", "integer"}:
+        return parse_expr({"kind": "literal", "type": "int", "value": int(value)})
+    if normalized in {"float", "number"}:
+        return parse_expr({"kind": "literal", "type": "float", "value": float(value)})
+    if normalized in {"bool", "boolean"}:
+        return parse_expr({"kind": "literal", "type": "bool", "value": bool(value)})
+    if normalized in {"string", "str"}:
+        return parse_expr({"kind": "literal", "type": "string", "value": str(value)})
+    if normalized == "vector2":
+        if isinstance(value, str):
+            parsed = ast.literal_eval(value)
+            value = parsed
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            pair = [float(value[0]), float(value[1])]
+            return parse_expr({"kind": "literal", "type": "vector2", "value": pair})
+    if normalized == "color":
+        if isinstance(value, str):
+            return parse_expr({"kind": "literal", "type": "color", "value": value})
+    if normalized == "rect2":
+        if isinstance(value, str):
+            parsed = ast.literal_eval(value)
+            value = parsed
+        if isinstance(value, (list, tuple)) and len(value) == 4:
+            rect = [float(value[0]), float(value[1]), float(value[2]), float(value[3])]
+            return parse_expr({"kind": "literal", "type": "rect2", "value": rect})
+    if normalized in {"list", "array"}:
+        if isinstance(value, str):
+            parsed = ast.literal_eval(value)
+            value = parsed
+        if isinstance(value, list):
+            return parse_expr({"kind": "literal", "type": "list", "value": value})
+    if normalized in {"dict", "object"}:
+        if isinstance(value, str):
+            parsed = ast.literal_eval(value)
+            value = parsed
+        if isinstance(value, dict):
+            return parse_expr({"kind": "literal", "type": "dict", "value": value})
+    return None
+
+
+def _neutral_state_expr(type_name: str):
+    normalized = (type_name or "").lower()
+    if normalized in {"int", "integer"}:
+        return _literal_expr_for_value(type_name, 0)
+    if normalized in {"float", "number"}:
+        return _literal_expr_for_value(type_name, 0.0)
+    if normalized in {"bool", "boolean"}:
+        return _literal_expr_for_value(type_name, False)
+    if normalized in {"string", "str"}:
+        return _literal_expr_for_value(type_name, "")
+    if normalized == "vector2":
+        return _literal_expr_for_value(type_name, [0.0, 0.0])
+    if normalized == "rect2":
+        return _literal_expr_for_value(type_name, [0.0, 0.0, 0.0, 0.0])
+    if normalized in {"list", "array"}:
+        return _literal_expr_for_value(type_name, [])
+    if normalized in {"dict", "object"}:
+        return _literal_expr_for_value(type_name, {})
+    return None
+
+
+def _fill_neutral_state_defaults(imap: ImpactMap) -> int:
+    filled = 0
+    for node in imap.unfilled_nodes():
+        if node.category != Category.STATE:
+            continue
+        expr = _neutral_state_expr(node.type)
+        if expr is None:
+            continue
+        node.initial_value = expr
+        imap.audit.append(f"dlr neutral state default applied: {node.id}")
+        filled += 1
+    return filled
+
+
+_KNOWN_EDGE_PROCEDURAL_NOTES: dict[tuple[str, str, WriteKind], str] = {
+    (
+        "combat_system",
+        "fighter.hitstun_timer",
+        WriteKind.FRAME_UPDATE,
+    ): (
+        "If a defender is struck by an unblocked hit, set hitstun_timer to the "
+        "resolved hitbox hitstun value. Otherwise, if the timer is above zero, "
+        "decrement it by 1 each frame toward 0 and clear counter-hit state when it expires."
+    ),
+    (
+        "stun_system",
+        "fighter.stun_timer",
+        WriteKind.FRAME_UPDATE,
+    ): (
+        "When stun threshold is reached, initialize stun_timer from the fighter's "
+        "stun_duration value. While the fighter remains stunned, decrement the timer "
+        "by 1 each update toward 0 and clear the stun state when it reaches zero."
+    ),
+    (
+        "stun_system",
+        "fighter.is_stunned",
+        WriteKind.FRAME_UPDATE,
+    ): (
+        "Set is_stunned to true when the fighter's stun_meter reaches stun_threshold "
+        "or while stun_timer remains above zero. Clear is_stunned once stun_timer "
+        "expires and the fighter is no longer in the dizzy state."
+    ),
+}
+
+
+def _fill_known_procedural_edges(imap: ImpactMap) -> int:
+    filled = 0
+    for edge in imap.unfilled_write_edges():
+        key = (edge.system, edge.target, edge.write_kind)
+        note = _KNOWN_EDGE_PROCEDURAL_NOTES.get(key)
+        if not note:
+            continue
+        edge.procedural_note = note
+        imap.audit.append(f"dlr known edge contract applied: {edge.system}->{edge.target}")
+        filled += 1
+    return filled
+
+
+def _sync_mechanic_constants_into_game_nodes(
+    imap: ImpactMap,
+    hlr: GameIdentity,
+    mech_constants: dict,
+) -> int:
+    synced = 0
+    specs_by_system = {m.system_name: m for m in hlr.mechanic_specs}
+    for system_name, spec in specs_by_system.items():
+        bucket = mech_constants.get(system_name)
+        if not isinstance(bucket, dict):
+            continue
+        for const in spec.constants_for_dlr:
+            raw = bucket.get(const.name)
+            node = imap.nodes.get(f"game.{const.name}")
+            if node is None or raw is None:
+                continue
+            raw_type = raw.get("type") if isinstance(raw, dict) else const.type
+            raw_value = raw.get("value") if isinstance(raw, dict) else raw
+            expr = _literal_expr_for_value(str(raw_type or const.type or node.type), raw_value)
+            if expr is None:
+                continue
+            node.initial_value = expr
+            imap.audit.append(
+                f"dlr constant synced into game node: game.{const.name} <- {system_name}.{const.name}"
+            )
+            synced += 1
+    return synced
+
+
 # ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
@@ -357,6 +557,10 @@ async def _fill_orphans_for_owner(
         f"## Unfilled properties — fill EVERY one with a typed initial_value or derivation\n"
         f"```json\n{json.dumps([n.model_dump() for n in orphans], indent=2, default=str)}\n```"
     )
+    prompt += (
+        "\n\n## Value guidance\n"
+        + _contextual_value_guidance(f"orphan:{owner}", {"owner": owner, "nodes": [n.model_dump() for n in orphans]}, hlr, None)
+    )
     if kb_text and kb_text != "{}":
         prompt += f"\n\n## KB game data\n```json\n{kb_text[:8000]}\n```"
 
@@ -371,14 +575,14 @@ async def _fill_orphans_for_owner(
         if trace:
             cid = trace.llm_start("dlr", label, caller_name, len(prompt))
             trace.llm_end(cid, output_chars=len(cached), cache_hit=True)
-        return json.loads(cached)
+        return parse_json_response(cached)
 
     last_err = None
     for attempt in range(3):
         cid = trace.llm_start("dlr", label, caller_name, len(prompt)) if trace else ""
         try:
             raw = await caller(ORPHAN_FILL_PROMPT, prompt, json_mode=True, label=label)
-            parsed = json.loads(raw)
+            parsed = parse_json_response(raw)
             _cache_put(key, raw)
             if trace:
                 trace.llm_end(cid, output_chars=len(raw))
@@ -433,6 +637,10 @@ async def fill_dlr(
         if errs:
             _log.warning("DLR[%s]: %d fill errors", system, len(errs))
 
+    synced_constants = _sync_mechanic_constants_into_game_nodes(imap, hlr, mech_constants)
+    if synced_constants:
+        _log.info("Impact DLR: synced %d mechanic constants into matching game nodes", synced_constants)
+
     # -------- Orphan pass ---------------------------------------------------
     # Any node still unfilled after the per-system pass is an orphan — a
     # template config/state property that no system explicitly writes. We fill
@@ -460,6 +668,14 @@ async def fill_dlr(
             if errs:
                 _log.warning("DLR orphan[%s]: %d fill errors", owner, len(errs))
 
+    defaulted_states = _fill_neutral_state_defaults(imap)
+    if defaulted_states:
+        _log.info("Impact DLR: applied %d neutral state defaults", defaulted_states)
+
+    filled_known_edges = _fill_known_procedural_edges(imap)
+    if filled_known_edges:
+        _log.info("Impact DLR: applied %d known procedural edge contracts", filled_known_edges)
+
     return summary, mech_constants
 
 
@@ -478,6 +694,6 @@ def validate_impact_dlr(imap: ImpactMap) -> list[str]:
         )
     for e in imap.unfilled_write_edges():
         errors.append(
-            f"write edge {e.system}→{e.target} [frame_update]: missing formula"
+            f"write edge {e.system}->{e.target} [frame_update]: missing formula"
         )
     return errors

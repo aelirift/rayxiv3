@@ -1,293 +1,172 @@
 {
   "_meta": {
-    "game": "Mario Kart — Super Mario Kart SNES inspired",
+    "game": "Modern arcade kart racer reference",
     "genre": "kart_racer",
-    "source": "SNES Mario Kart mechanics + community analysis",
+    "source": "modern kart-racer mechanics and presentation expectations",
     "notes": [
-      "Mode 7-style pseudo-3D perspective rendering via raycasting scanlines",
-      "Physics at 60fps",
-      "Speed in pixels/second",
-      "Angle in radians"
+      "Primary gameplay view is a third-person chase camera behind the lead vehicle.",
+      "Tracks should feel wide and long, with readable turns, scenery, and item placement.",
+      "If the user asks for Mario-Kart-like play, favor the modern mainstream interpretation unless they explicitly ask for retro or Mode-7."
     ]
   },
-
   "global": {
-    "screen_w": 800,
-    "screen_h": 600,
-    "horizon_y": 300,
     "fps": 60,
     "max_laps": 3,
-    "num_ai_karts": 4,
-    "gravity": 0.0,
     "countdown_seconds": 3,
-    "music_bpm": 140,
-    "notes": [
-      "horizon_y splits the screen: above is sky, below is road (Mode 7 scanlines)",
-      "The road is rendered per-scanline: each row projects a world-plane y from the camera",
-      "Karts and items are billboarded sprites — scaled by (focal_length / distance_z)",
-      "Camera: position = kart.x, kart.y; angle = kart.angle; pitched slightly down",
-      "focal_length = 200, camera_height = 64, camera_pitch = 0.55 (rads looking down)",
-      "Track is a closed polyline of world-space waypoints; road half-width = 180 units",
-      "World units: 1 unit ≈ 1 screen pixel at distance 200"
+    "countdown_values": ["3", "2", "1", "GO"],
+    "ai_racer_count_default": 7,
+    "supports_launch_boost": true,
+    "supports_items": true,
+    "supports_drift_boost": true,
+    "supports_boost_pads": true,
+    "supports_jump_tricks": true,
+    "supports_collectible_speed_resource": true
+  },
+  "camera": {
+    "view_model": "third_person_chase",
+    "distance_back": 7.5,
+    "height": 3.4,
+    "look_ahead_distance": 16.0,
+    "fov_degrees": 68,
+    "rules": [
+      "Keep the player vehicle readable near the bottom-center of the frame.",
+      "Expose upcoming turns and enough track width for decision making.",
+      "Do not default to top-down as the primary race view for modern kart-racer prompts."
     ]
   },
-
-  "mode7_renderer": {
-    "focal_length": 200,
-    "camera_height": 64,
-    "camera_pitch": 0.55,
-    "horizon_y": 300,
-    "road_half_width": 180,
-    "road_color": [80, 80, 80],
-    "grass_color": [34, 139, 34],
-    "rumble_color": [200, 40, 40],
-    "rumble_width": 24,
-    "sky_top_color": [100, 160, 230],
-    "sky_bottom_color": [180, 210, 255],
-    "fog_start": 600,
-    "fog_end": 1200,
-    "fog_color": [180, 210, 255],
-    "scanline_step": 2,
-    "sprite_scale_base": 128,
-    "algorithm": [
-      "For each screen row y from horizon_y+1 to screen_h:",
-      "  row_dist = camera_height * focal_length / (y - horizon_y)",
-      "  cos_a = cos(camera_angle), sin_a = sin(camera_angle)",
-      "  world_x = camera_x + row_dist * cos_a",
-      "  world_y = camera_y + row_dist * sin_a",
-      "  step_x = (2 * row_dist) / screen_w * (-sin_a)",
-      "  step_y = (2 * row_dist) / screen_w * cos_a",
-      "  world_x -= step_x * (screen_w/2); world_y -= step_y * (screen_h/2)",
-      "  For each col x: sample road texture at (world_x, world_y), draw pixel, advance step",
-      "Sprites: compute screen_x from angle diff, screen_y from horizon to road, scale=focal/dist"
+  "track_design": {
+    "required_elements": [
+      "start_grid",
+      "lap_line",
+      "checkpoint_sequence",
+      "wide racing line",
+      "item_box_lines"
+    ],
+    "optional_elements": [
+      "boost_pads",
+      "jump_ramps",
+      "offroad_sections",
+      "hazards",
+      "alternate_traversal_sections"
+    ],
+    "alternate_traversal_sections": [
+      "glide",
+      "underwater",
+      "adhesion_or_anti_gravity"
+    ],
+    "course_feel_notes": [
+      "Avoid toy-sized tracks.",
+      "Course width should allow passing, drifting, and item play.",
+      "Scenery should reinforce speed and direction."
     ]
   },
-
   "physics": {
-    "max_speed": 320.0,
-    "acceleration": 220.0,
-    "brake_force": 400.0,
-    "friction": 0.94,
-    "offroad_friction": 0.80,
-    "offroad_max_speed_mult": 0.45,
-    "turn_speed_base": 2.8,
-    "turn_speed_at_max": 1.4,
-    "drift_min_speed": 120.0,
-    "drift_turn_mult": 1.7,
-    "drift_friction": 0.97,
-    "drift_boost_charge_time": 0.7,
-    "drift_boost_small": 1.4,
-    "drift_boost_large": 1.9,
-    "boost_duration": 1.2,
-    "boost_speed": 420.0,
-    "collision_push_force": 80.0,
-    "kart_radius": 18
+    "top_speed_range": [28.0, 42.0],
+    "acceleration_range": [12.0, 22.0],
+    "handling_range": [4.0, 9.0],
+    "traction_range": [0.65, 0.95],
+    "drift_entry_min_speed": 10.0,
+    "drift_charge_bands": [
+      "small_mini_turbo",
+      "medium_mini_turbo",
+      "large_mini_turbo"
+    ],
+    "boost_pad_bonus": "short_speed_boost",
+    "jump_trick_bonus": "landing_speed_boost",
+    "offroad_penalty": "reduced_top_speed_and_handling",
+    "launch_boost_window": "timed_accelerate_near_go"
   },
-
-  "characters": {
-    "mario": {
-      "full_name": "Mario",
-      "weight_class": "medium",
-      "top_speed": 7, "acceleration": 7, "handling": 8, "weight": 5,
-      "color": [220, 50, 50],
-      "unlock": "default"
+  "driver_archetypes": {
+    "light": {
+      "top_speed": "low",
+      "acceleration": "high",
+      "handling": "high",
+      "weight": "low"
     },
-    "luigi": {
-      "full_name": "Luigi",
-      "weight_class": "medium",
-      "top_speed": 6, "acceleration": 8, "handling": 9, "weight": 4,
-      "color": [50, 180, 50],
-      "unlock": "default"
+    "balanced": {
+      "top_speed": "medium",
+      "acceleration": "medium",
+      "handling": "medium",
+      "weight": "medium"
     },
-    "peach": {
-      "full_name": "Princess Peach",
-      "weight_class": "light",
-      "top_speed": 5, "acceleration": 9, "handling": 10, "weight": 3,
-      "color": [255, 160, 200],
-      "unlock": "default"
-    },
-    "toad": {
-      "full_name": "Toad",
-      "weight_class": "light",
-      "top_speed": 5, "acceleration": 10, "handling": 9, "weight": 2,
-      "color": [220, 220, 60],
-      "unlock": "default"
-    },
-    "yoshi": {
-      "full_name": "Yoshi",
-      "weight_class": "medium",
-      "top_speed": 7, "acceleration": 7, "handling": 8, "weight": 4,
-      "color": [80, 220, 80],
-      "unlock": "default"
-    },
-    "donkey_kong": {
-      "full_name": "Donkey Kong",
-      "weight_class": "heavy",
-      "top_speed": 9, "acceleration": 4, "handling": 5, "weight": 8,
-      "color": [160, 100, 40],
-      "unlock": "default"
-    },
-    "bowser": {
-      "full_name": "Bowser",
-      "weight_class": "heavy",
-      "top_speed": 10, "acceleration": 3, "handling": 4, "weight": 10,
-      "color": [60, 140, 60],
-      "unlock": "default"
-    },
-    "koopa": {
-      "full_name": "Koopa Troopa",
-      "weight_class": "light",
-      "top_speed": 6, "acceleration": 9, "handling": 7, "weight": 3,
-      "color": [100, 180, 100],
-      "unlock": "default"
+    "heavy": {
+      "top_speed": "high",
+      "acceleration": "low",
+      "handling": "low",
+      "weight": "high"
     }
   },
-
+  "vehicle_loadout": {
+    "selection_stage_expected": true,
+    "tunable_axes": [
+      "speed",
+      "acceleration",
+      "handling",
+      "traction",
+      "drift_feel"
+    ],
+    "notes": [
+      "Driver and vehicle together define race feel.",
+      "If a simplified build omits loadout parts, it should still preserve distinct driver or vehicle stat identity."
+    ]
+  },
   "items": {
-    "mushroom": {
-      "type": "boost",
-      "uses": 1,
-      "boost_duration": 1.2,
-      "boost_speed": 420.0,
-      "target": "self",
-      "probability_weights": [10, 8, 5, 2, 0]
-    },
-    "triple_mushroom": {
-      "type": "boost",
-      "uses": 3,
-      "boost_duration": 1.2,
-      "boost_speed": 420.0,
-      "target": "self",
-      "probability_weights": [0, 5, 8, 10, 6]
-    },
-    "green_shell": {
-      "type": "projectile",
-      "speed": 400.0,
-      "bounces": 5,
-      "radius": 10,
-      "damage": "spin_out",
-      "target": "hit",
-      "probability_weights": [8, 8, 7, 5, 3]
-    },
-    "triple_green_shell": {
-      "type": "projectile_orbit",
-      "count": 3,
-      "speed": 400.0,
-      "radius": 10,
-      "damage": "spin_out",
-      "target": "hit",
-      "probability_weights": [0, 5, 6, 8, 5]
-    },
-    "red_shell": {
-      "type": "homing_projectile",
-      "speed": 350.0,
-      "homing_strength": 0.08,
-      "radius": 10,
-      "damage": "spin_out",
-      "target": "nearest_ahead",
-      "probability_weights": [3, 5, 7, 8, 7]
-    },
-    "blue_shell": {
-      "type": "homing_projectile",
-      "speed": 450.0,
-      "target": "first_place",
-      "damage": "spin_out_extended",
-      "explosion_radius": 80,
-      "probability_weights": [0, 0, 2, 5, 10]
-    },
-    "banana": {
-      "type": "obstacle",
-      "duration": 20.0,
-      "radius": 10,
-      "damage": "spin_out",
-      "can_be_dropped_behind": true,
-      "probability_weights": [5, 7, 8, 6, 4]
-    },
-    "star": {
-      "type": "power_up",
-      "duration": 4.0,
-      "effects": ["invincibility", "boost", "knock_others"],
-      "target": "self",
-      "probability_weights": [0, 0, 2, 5, 8]
-    },
-    "lightning": {
-      "type": "area",
-      "target": "all_opponents",
-      "effects": ["shrink", "slow"],
-      "duration": 5.0,
-      "probability_weights": [0, 0, 1, 3, 8]
-    },
-    "fake_item_box": {
-      "type": "obstacle",
-      "duration": 30.0,
-      "radius": 14,
-      "damage": "spin_out",
-      "visual": "item_box_inverted_question",
-      "probability_weights": [2, 3, 4, 3, 2]
+    "box_pickup_flow": [
+      "drive through item_box",
+      "assign weighted item by race state",
+      "show held item in hud",
+      "use item on demand"
+    ],
+    "effect_families": [
+      "self_boost",
+      "projectile",
+      "trap",
+      "shield_or_orbit",
+      "temporary_invincibility",
+      "area_debuff"
+    ],
+    "example_effects": {
+      "self_boost": ["single_boost", "triple_boost"],
+      "projectile": ["straight_projectile", "homing_projectile"],
+      "trap": ["slip_hazard", "dropped_obstacle"],
+      "shield_or_orbit": ["orbiting_defense"],
+      "temporary_invincibility": ["invincible_dash"],
+      "area_debuff": ["vision_obscure", "mass_slow"]
     }
   },
-
-  "tracks": {
-    "mushroom_cup_1": {
-      "name": "Mushroom Circuit",
-      "theme": "plains",
-      "difficulty": 1,
-      "waypoints": [
-        [400, 500], [400, 300], [300, 180], [200, 130], [160, 200],
-        [180, 320], [280, 380], [380, 420], [500, 440], [620, 400],
-        [700, 320], [720, 200], [650, 130], [550, 100], [460, 110],
-        [400, 150], [400, 300]
-      ],
-      "road_half_width": 180,
-      "lap_count": 3,
-      "item_boxes": 8,
-      "sky_color": [100, 160, 230],
-      "road_color": [90, 90, 90]
-    },
-    "rainbow_road": {
-      "name": "Rainbow Road",
-      "theme": "space",
-      "difficulty": 5,
-      "waypoints": [
-        [400, 550], [250, 480], [150, 380], [120, 240], [200, 140],
-        [350, 80], [520, 80], [680, 140], [740, 260], [700, 400],
-        [580, 500], [450, 540], [400, 550]
-      ],
-      "road_half_width": 140,
-      "lap_count": 3,
-      "item_boxes": 6,
-      "sky_color": [10, 10, 40],
-      "road_color": [180, 60, 220],
-      "notes": ["Rainbow Road has no barriers — fall off = warp back to track center"]
+  "collectibles": {
+    "speed_resource": {
+      "visible_in_hud": true,
+      "pickup_type": "coin_like_collectible",
+      "effect": "incremental_top_speed_or_bonus_progress"
     }
   },
-
-  "ai": {
-    "rubber_band_speed_mult": [1.0, 1.1, 1.2, 1.3],
-    "item_use_delay_frames": [30, 60],
-    "path_lookahead_waypoints": 3,
-    "steering_kp": 2.5,
-    "obstacle_avoidance_radius": 60,
-    "difficulty_levels": {
-      "50cc":  {"speed_mult": 0.6, "item_frequency": 0.4},
-      "100cc": {"speed_mult": 0.8, "item_frequency": 0.6},
-      "150cc": {"speed_mult": 1.0, "item_frequency": 0.8}
-    }
+  "hud": {
+    "required_widgets": [
+      "lap_counter",
+      "position_display",
+      "current_item_display",
+      "countdown_display"
+    ],
+    "optional_widgets": [
+      "speedometer",
+      "minimap",
+      "collectible_counter",
+      "drift_or_boost_feedback"
+    ]
   },
-
-  "race": {
-    "positions_updated_by": "checkpoint_index * 1000 + distance_to_next_checkpoint",
-    "item_probability_by_position": "higher position = better items",
-    "podium_places": 3,
-    "finish_order_shown_on_podium": true
-  },
-
-  "notes": [
-    "Mode 7 rendering: road below horizon is scanline-raycasted in world space",
-    "Sprites (karts, shells, bananas, item boxes) are billboarded using depth-based scale",
-    "Camera always follows player kart position and angle, tilted slightly down",
-    "Offroad detection: sample grass/road by checking if world point is within track polygon",
-    "Drift: activate by holding shift+turn at >drift_min_speed; boost charges during drift",
-    "Item box collision: circular radius check in 2D world space (not screen space)"
-  ]
+  "race_progression": {
+    "ranking_inputs": [
+      "current_lap",
+      "checkpoint_index",
+      "distance_to_next_checkpoint"
+    ],
+    "finish_rule": "race ends when the player completes final lap",
+    "ai_expectations": [
+      "follow course",
+      "respect countdown",
+      "use items",
+      "remain competitive"
+    ]
+  }
 }

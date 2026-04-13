@@ -56,7 +56,7 @@
       "phase": "resolution"
     },
     "movement_system": {
-      "description": "Walking, jumping, crouching, facing direction, gravity. Objects: fighter, stage. Interactions: reads input direction to determine walk/jump/crouch, physics_system applies gravity and updates position, clamps to stage bounds, always faces opponent for forward/back determination. Effects: set position, set velocity, set facing_direction, set is_airborne, set is_crouching.",
+      "description": "Walking, jumping, crouching, facing direction, gravity. Objects: fighter, stage. Interactions: reads input direction to determine walk/jump/crouch, movement_system applies gravity and updates position, clamps to stage bounds, always faces opponent for forward/back determination. Effects: set position, set velocity, set facing_direction, set is_airborne, set is_crouching.",
       "scope": "role_generic",
       "phase": "physics"
     },

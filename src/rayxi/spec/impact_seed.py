@@ -8,9 +8,12 @@ No LLM calls. Pure data transform.
 
 from __future__ import annotations
 
+import ast
 import logging
+import re
 from typing import TYPE_CHECKING
 
+from .expr import parse_expr
 from .impact_map import (
     Category,
     ImpactMap,
@@ -72,6 +75,109 @@ def _map_scope(template_scope: str) -> Scope:
     return Scope.INSTANCE
 
 
+_VECTOR2_RE = re.compile(r"^Vector2\(\s*([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\s*\)$")
+_RECT2_RE = re.compile(
+    r"^Rect2\(\s*([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\s*\)$"
+)
+
+
+def _template_literal_expr(type_name: str, raw_value):
+    normalized = (type_name or "").strip().lower()
+
+    if normalized in {"string", "str"}:
+        return parse_expr({"kind": "literal", "type": "string", "value": "" if raw_value is None else str(raw_value)})
+
+    if raw_value is None:
+        return None
+
+    if isinstance(raw_value, str):
+        text = raw_value.strip()
+        if text == "" or text.lower() == "null":
+            return None
+    else:
+        text = raw_value
+
+    if normalized in {"int", "integer"}:
+        value = int(float(text))
+        return parse_expr({"kind": "literal", "type": "int", "value": value})
+
+    if normalized in {"float", "number"}:
+        value = float(text)
+        return parse_expr({"kind": "literal", "type": "float", "value": value})
+
+    if normalized in {"bool", "boolean"}:
+        if isinstance(text, bool):
+            value = text
+        else:
+            lowered = str(text).strip().lower()
+            if lowered not in {"true", "false"}:
+                return None
+            value = lowered == "true"
+        return parse_expr({"kind": "literal", "type": "bool", "value": value})
+
+    if normalized == "vector2":
+        if isinstance(text, (list, tuple)) and len(text) == 2:
+            pair = [float(text[0]), float(text[1])]
+            return parse_expr({"kind": "literal", "type": "vector2", "value": pair})
+        match = _VECTOR2_RE.match(str(text))
+        if match:
+            return parse_expr({
+                "kind": "literal",
+                "type": "vector2",
+                "value": [float(match.group(1)), float(match.group(2))],
+            })
+        return None
+
+    if normalized == "rect2":
+        if isinstance(text, (list, tuple)) and len(text) == 4:
+            rect = [float(text[0]), float(text[1]), float(text[2]), float(text[3])]
+            return parse_expr({"kind": "literal", "type": "rect2", "value": rect})
+        match = _RECT2_RE.match(str(text))
+        if match:
+            return parse_expr({
+                "kind": "literal",
+                "type": "rect2",
+                "value": [float(match.group(i)) for i in range(1, 5)],
+            })
+        return None
+
+    if normalized == "color":
+        if isinstance(text, str) and text.startswith("#"):
+            return parse_expr({"kind": "literal", "type": "color", "value": text})
+        return None
+
+    if normalized in {"list", "array"}:
+        if isinstance(text, list):
+            return parse_expr({"kind": "literal", "type": "list", "value": text})
+        parsed = ast.literal_eval(str(text))
+        if isinstance(parsed, list):
+            return parse_expr({"kind": "literal", "type": "list", "value": parsed})
+        return None
+
+    if normalized in {"dict", "object"}:
+        if isinstance(text, dict):
+            return parse_expr({"kind": "literal", "type": "dict", "value": text})
+        parsed = ast.literal_eval(str(text))
+        if isinstance(parsed, dict):
+            return parse_expr({"kind": "literal", "type": "dict", "value": parsed})
+        return None
+
+    return None
+
+
+def _template_initial_expr(prop: "PropertySpec", category: Category):
+    if category == Category.DERIVED:
+        return None
+    for candidate in (prop.initial, prop.default):
+        try:
+            expr = _template_literal_expr(prop.type, candidate)
+        except (ValueError, SyntaxError):
+            expr = None
+        if expr is not None:
+            return expr
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Seed builder
 # ---------------------------------------------------------------------------
@@ -94,8 +200,9 @@ def build_impact_seed(
       5. Emit write/read edges from mechanic_spec interactions.
       6. Emit PropertyNodes + read edges for mechanic_spec HUD widgets.
 
-    Returns an ImpactMap that passes structural validation but has NO typed
-    formulas, initial_values, or derivations — DLR fills those later.
+    Returns an ImpactMap that passes structural validation. Borrowed template
+    literals are preserved on nodes when available; DLR fills any remaining
+    missing values and formulas later.
     """
     imap = ImpactMap(
         game_name=hlr.game_name,
@@ -125,6 +232,7 @@ def build_impact_seed(
         return template_to_hlr.get(name, name)
 
     valid_systems = set(imap.systems)
+    valid_read_consumers = valid_systems | {"hud_bar", "hud_text"}
 
     # ----- 1. Template fighter properties -----------------------------------
     _seed_role_props(
@@ -132,6 +240,7 @@ def build_impact_seed(
         role_owner="fighter",
         role_props=schema.fighter_schema.properties,
         valid_systems=valid_systems,
+        valid_read_consumers=valid_read_consumers,
         translate_system=translate_system,
     )
 
@@ -148,6 +257,7 @@ def build_impact_seed(
                 prop=p,
                 scope_override=Scope.CHARACTER_DEF,
                 valid_systems=valid_systems,
+                valid_read_consumers=valid_read_consumers,
                 translate_system=translate_system,
             )
 
@@ -158,6 +268,7 @@ def build_impact_seed(
             role_owner="projectile",
             role_props=schema.projectile_schema.properties,
             valid_systems=valid_systems,
+            valid_read_consumers=valid_read_consumers,
             translate_system=translate_system,
         )
 
@@ -169,6 +280,7 @@ def build_impact_seed(
             prop=p,
             scope_override=Scope.GAME,
             valid_systems=valid_systems,
+            valid_read_consumers=valid_read_consumers,
             translate_system=translate_system,
         )
 
@@ -176,16 +288,18 @@ def build_impact_seed(
     for p in schema.hud_bar_schema.properties:
         _seed_one_template_prop(
             imap=imap, owner="hud_bar", prop=p,
-            valid_systems=valid_systems, translate_system=translate_system,
+            valid_systems=valid_systems,
+            valid_read_consumers=valid_read_consumers,
+            translate_system=translate_system,
         )
 
     # ----- 5. Mechanic spec properties + interactions -----------------------
     for spec in hlr.mechanic_specs:
-        _seed_mechanic_spec(imap, spec, valid_systems)
+        _seed_mechanic_spec(imap, hlr, spec, valid_systems)
 
     # ----- 6. Mechanic spec HUD entities ------------------------------------
     for spec in hlr.mechanic_specs:
-        _seed_mechanic_hud(imap, spec, valid_systems)
+        _seed_mechanic_hud(imap, hlr, spec, valid_systems)
 
     # ----- 7. Enum value domains --------------------------------------------
     # Apply canonical enum_values from the HLT's property_enums block to every
@@ -228,13 +342,14 @@ def _flat_scenes(scenes):
     return flat
 
 
-def _seed_role_props(imap, role_owner, role_props, valid_systems, translate_system):
+def _seed_role_props(imap, role_owner, role_props, valid_systems, valid_read_consumers, translate_system):
     for p in role_props:
         _seed_one_template_prop(
             imap=imap,
             owner=role_owner,
             prop=p,
             valid_systems=valid_systems,
+            valid_read_consumers=valid_read_consumers,
             translate_system=translate_system,
         )
 
@@ -244,19 +359,22 @@ def _seed_one_template_prop(
     owner: str,
     prop: "PropertySpec",
     valid_systems: set[str],
+    valid_read_consumers: set[str],
     translate_system,
     scope_override: Scope | None = None,
 ) -> None:
     """Convert one template PropertySpec into a PropertyNode + its write/read edges."""
     node_id = f"{owner}.{prop.name}"
+    category = _map_category(prop.category)
     node = PropertyNode(
         id=node_id,
         owner=owner,
         name=prop.name,
         type=prop.type,
-        category=_map_category(prop.category),
+        category=category,
         scope=scope_override or _map_scope(prop.scope),
         description=prop.purpose or "",
+        initial_value=_template_initial_expr(prop, category),
         declared_by="template",
     )
     imap.add_node(node)
@@ -268,7 +386,8 @@ def _seed_one_template_prop(
             continue
         sys_name = translate_system(raw_system)
         if sys_name not in valid_systems:
-            continue  # template system stripped from HLR
+            imap.audit.append(f"seed skipped unresolved template writer {raw_system} for {node_id}")
+            continue
         imap.add_write_edge(WriteEdge(
             system=sys_name,
             target=node_id,
@@ -283,7 +402,8 @@ def _seed_one_template_prop(
         if not raw_system:
             continue
         sys_name = translate_system(raw_system)
-        if sys_name not in valid_systems:
+        if sys_name not in valid_read_consumers:
+            imap.audit.append(f"seed skipped unresolved template reader {raw_system} for {node_id}")
             continue
         imap.add_read_edge(ReadEdge(
             system=sys_name,
@@ -298,52 +418,65 @@ def _seed_one_template_prop(
 # ---------------------------------------------------------------------------
 
 
-_OWNER_ROLE_MAP = {
-    "fighter": "fighter",
-    "character": "fighter",
-    "projectile": "projectile",
-    "game": "game",
-    "stage": "stage",
-    "hud": "hud_bar",
-}
+def _mechanic_property_owners(hlr: GameIdentity, role: str, scope: str) -> list[str]:
+    normalized_role = (role or "").strip()
+    if normalized_role == "hud":
+        return ["hud_bar"]
+    if normalized_role in {"game", "stage", "projectile", "fighter"}:
+        return [normalized_role]
+    if normalized_role == "character" or scope == "character_def":
+        characters = hlr.get_enum("characters")
+        if characters:
+            return [f"character.{char}" for char in characters]
+        return ["character.default"]
+    if normalized_role:
+        return [normalized_role]
+    return ["game"]
 
 
-def _seed_mechanic_spec(imap: ImpactMap, spec: MechanicSpec, valid_systems: set[str]) -> None:
+def _seed_mechanic_spec(
+    imap: ImpactMap,
+    hlr: GameIdentity,
+    spec: MechanicSpec,
+    valid_systems: set[str],
+) -> None:
     """Add a mechanic_spec's property nodes + interaction edges to the map."""
     origin = f"hlr_seed:{spec.system_name}"
 
     for p in spec.properties:
-        owner = _OWNER_ROLE_MAP.get(p.role, p.role)
-        node_id = f"{owner}.{p.name}"
-        imap.add_node(PropertyNode(
-            id=node_id,
-            owner=owner,
-            name=p.name,
-            type=p.type,
-            category=Category.STATE,  # mechanic_spec props are runtime state by default
-            scope=Scope.INSTANCE if p.scope == "instance" else Scope(p.scope),
-            description=p.purpose,
-            declared_by=origin,
-        ))
+        owners = _mechanic_property_owners(hlr, p.role, p.scope)
+        node_scope = Scope.INSTANCE if p.scope == "instance" else Scope(p.scope)
+        for owner in owners:
+            node_id = f"{owner}.{p.name}"
+            imap.add_node(PropertyNode(
+                id=node_id,
+                owner=owner,
+                name=p.name,
+                type=p.type,
+                category=Category.STATE,  # mechanic_spec props are runtime state by default
+                scope=node_scope,
+                description=p.purpose,
+                declared_by=origin,
+            ))
 
-        # Write edges from property's written_by
-        for s in p.written_by:
-            if s in valid_systems:
-                imap.add_write_edge(WriteEdge(
-                    system=s,
-                    target=node_id,
-                    write_kind=WriteKind.LIFECYCLE if s == "round_system" and p.reset_on else WriteKind.FRAME_UPDATE,
-                    trigger=p.reset_on if (s == "round_system" and p.reset_on) else "",
-                    declared_by=origin,
-                ))
+            # Write edges from property's written_by
+            for s in p.written_by:
+                if s in valid_systems:
+                    imap.add_write_edge(WriteEdge(
+                        system=s,
+                        target=node_id,
+                        write_kind=WriteKind.LIFECYCLE if s == "round_system" and p.reset_on else WriteKind.FRAME_UPDATE,
+                        trigger=p.reset_on if (s == "round_system" and p.reset_on) else "",
+                        declared_by=origin,
+                    ))
 
-        # Read edges — only include system-level reads here; HUD reads come via hud_entities
-        for s in p.read_by:
-            if s in valid_systems:
-                imap.add_read_edge(ReadEdge(
-                    system=s, source=node_id,
-                    purpose=p.purpose, declared_by=origin,
-                ))
+            # Read edges — only include system-level reads here; HUD reads come via hud_entities
+            for s in p.read_by:
+                if s in valid_systems:
+                    imap.add_read_edge(ReadEdge(
+                        system=s, source=node_id,
+                        purpose=p.purpose, declared_by=origin,
+                    ))
 
     # Interactions → typed edges
     for i, it in enumerate(spec.interactions):
@@ -387,9 +520,18 @@ def _seed_interaction(
         ))
 
 
-def _seed_mechanic_hud(imap: ImpactMap, spec: MechanicSpec, valid_systems: set[str]) -> None:
+def _seed_mechanic_hud(
+    imap: ImpactMap,
+    hlr: GameIdentity,
+    spec: MechanicSpec,
+    valid_systems: set[str],
+) -> None:
     """Emit PropertyNodes + read edges for every mechanic_spec HUD widget."""
     origin = f"hlr_seed:{spec.system_name}:hud"
+    prop_sources: dict[str, list[str]] = {}
+    for prop in spec.properties:
+        for owner in _mechanic_property_owners(hlr, prop.role, prop.scope):
+            prop_sources.setdefault(prop.name, []).append(f"{owner}.{prop.name}")
     for hud in spec.hud_entities:
         owner = f"hud.{hud.name}"
 
@@ -409,7 +551,11 @@ def _seed_mechanic_hud(imap: ImpactMap, spec: MechanicSpec, valid_systems: set[s
 
         # Widget reads fighter.<prop> for each property in hud.reads
         for read_prop in hud.reads:
-            source_id = f"fighter.{read_prop}"
+            if "." in read_prop:
+                source_id = read_prop
+            else:
+                candidates = prop_sources.get(read_prop, [])
+                source_id = candidates[0] if candidates else f"fighter.{read_prop}"
             imap.add_read_edge(ReadEdge(
                 system=hud.name,   # widget name as the reader
                 source=source_id,

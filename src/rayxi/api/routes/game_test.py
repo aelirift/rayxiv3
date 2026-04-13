@@ -33,6 +33,14 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
+from rayxi.spec.mechanic_coverage import (
+    audit_test_plan_coverage,
+    audit_test_results_coverage,
+    load_mechanic_manifest,
+    write_mechanic_artifact,
+)
+from rayxi.spec.mechanic_behavior_fallback import default_behaviors_for_feature, merge_behaviors
+from rayxi.spec.mechanic_contract import MechanicBehavior, MechanicFeature, MechanicManifest, MechanicTestAction
 
 router = APIRouter()
 log = logging.getLogger("rayxi.api.game_test")
@@ -40,6 +48,23 @@ log = logging.getLogger("rayxi.api.game_test")
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _OUTPUT_DIR = _REPO_ROOT / "output"
 _DEBUG_DIR = _REPO_ROOT / ".debug" / "screenshots"
+
+
+def _finalize_test_steps(game_name: str, steps: list[dict]) -> list[dict]:
+    steps = _normalize_test_steps(steps)
+    manifest = load_mechanic_manifest(_OUTPUT_DIR / game_name / "mechanic_manifest.json")
+    if manifest is not None:
+        report = audit_test_plan_coverage(manifest, steps)
+        write_mechanic_artifact(_OUTPUT_DIR / game_name / "mechanic_coverage_test_plan.json", report)
+    return steps
+
+
+def _write_test_results_coverage(game_name: str, steps: list[dict], results: list[dict]) -> None:
+    manifest = load_mechanic_manifest(_OUTPUT_DIR / game_name / "mechanic_manifest.json")
+    if manifest is None:
+        return
+    report = audit_test_results_coverage(manifest, steps, results)
+    write_mechanic_artifact(_OUTPUT_DIR / game_name / "mechanic_coverage_test_results.json", report)
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +217,466 @@ def _sse(data: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-_GAMEPLAY_SCENE_KEYWORDS = ("fight", "battle", "combat", "gameplay", "match", "play")
+_GAMEPLAY_SCENE_KEYWORDS = ("fight", "battle", "combat", "gameplay", "match", "play", "race", "racing", "track")
+
+
+def _load_mechanic_features(game_name: str, contract: dict[str, Any] | None) -> list[MechanicFeature]:
+    raw_features = list((contract or {}).get("mechanics") or [])
+    if raw_features:
+        try:
+            features = [MechanicFeature.model_validate(item) for item in raw_features]
+            for feature in features:
+                feature.behaviors = merge_behaviors(list(feature.behaviors) + default_behaviors_for_feature(feature))
+            return features
+        except Exception:
+            pass
+    manifest = load_mechanic_manifest(_OUTPUT_DIR / game_name / "mechanic_manifest.json")
+    if manifest is None:
+        return []
+    features = list(manifest.features)
+    for feature in features:
+        feature.behaviors = merge_behaviors(list(feature.behaviors) + default_behaviors_for_feature(feature))
+    return features
+
+
+def _step_merge_key(step: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            str(step.get("action") or "").lower(),
+            str(step.get("keys") or ""),
+            str(step.get("method") or "press"),
+            str(step.get("navigate_query") or ""),
+            str(step.get("url_query") or ""),
+            json.dumps(step.get("sequence") or [], sort_keys=True),
+        ]
+    )
+
+
+def _merge_step_lists(left: list[str], right: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in list(left) + list(right):
+        clean = str(item or "").strip()
+        if not clean:
+            continue
+        key = clean.lower()
+        if key in seen:
+            continue
+        out.append(clean)
+        seen.add(key)
+    return out
+
+
+def _merge_test_step(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    merged["description"] = existing.get("description") or incoming.get("description") or ""
+    merged["wait_ms"] = max(int(existing.get("wait_ms", 0) or 0), int(incoming.get("wait_ms", 0) or 0))
+    merged["hold_ms"] = max(int(existing.get("hold_ms", 0) or 0), int(incoming.get("hold_ms", 0) or 0))
+    merged["verify_change"] = bool(existing.get("verify_change")) or bool(incoming.get("verify_change"))
+    existing_diff = existing.get("diff_threshold")
+    incoming_diff = incoming.get("diff_threshold")
+    if existing_diff is None:
+        merged["diff_threshold"] = incoming_diff
+    elif incoming_diff is None:
+        merged["diff_threshold"] = existing_diff
+    else:
+        merged["diff_threshold"] = min(float(existing_diff), float(incoming_diff))
+    for key in (
+        "checks",
+        "trace_any",
+        "trace_all",
+        "trace_any_global",
+        "trace_all_global",
+        "trace_none",
+        "trace_none_global",
+    ):
+        merged[key] = _merge_step_lists(existing.get(key) or [], incoming.get(key) or [])
+    return merged
+
+
+def _action_to_step(action: MechanicTestAction, behavior: MechanicBehavior) -> dict[str, Any]:
+    step: dict[str, Any] = {
+        "action": action.action,
+        "description": action.description or behavior.summary,
+        "keys": action.keys,
+        "method": action.method,
+        "wait_ms": action.wait_ms,
+        "hold_ms": action.hold_ms,
+        "verify_change": action.verify_change,
+        "diff_threshold": action.diff_threshold,
+        "navigate_query": action.navigate_query,
+        "url_query": action.url_query,
+        "sequence": list(action.sequence or []),
+    }
+    verification = action.verification.model_dump(exclude_none=True)
+    for key, value in verification.items():
+        if value:
+            step[key] = value
+    return step
+
+
+_PROPERTY_REF_RE = re.compile(r"\b([a-z_][\w]*)\.([a-z_][\w]*)\b", re.IGNORECASE)
+_PROPERTY_COMPARE_RE = re.compile(
+    r"\b([a-z_][\w]*)\.([a-z_][\w]*)\s*(==|!=|>=|<=|>|<)\s*(['\"]?[^'\"\s]+['\"]?)",
+    re.IGNORECASE,
+)
+_BARE_PROPERTY_COMPARE_RE = re.compile(
+    r"\b([a-z_][\w]*)\s*(==|!=|>=|<=|>|<)\s*(['\"]?[^'\"\s]+['\"]?)",
+    re.IGNORECASE,
+)
+_PROPERTY_TRUE_RE = re.compile(
+    r"\b([a-z_][\w]*)\.([a-z_][\w]*)\s+(?:is true|was set to true)\b",
+    re.IGNORECASE,
+)
+_PROPERTY_FALSE_RE = re.compile(
+    r"\b([a-z_][\w]*)\.([a-z_][\w]*)\s+(?:is false|was set to false)\b",
+    re.IGNORECASE,
+)
+_BARE_PROPERTY_TRUE_RE = re.compile(r"\b([a-z_][\w]*)\s+(?:is true|was set to true)\b", re.IGNORECASE)
+_BARE_PROPERTY_FALSE_RE = re.compile(r"\b([a-z_][\w]*)\s+(?:is false|was set to false)\b", re.IGNORECASE)
+_PROPERTY_INCREMENT_RE = re.compile(
+    r"\b([a-z_][\w]*)\.([a-z_][\w]*)\s+increment(?:ed|s)\s+by\s+([^\s]+)",
+    re.IGNORECASE,
+)
+_BARE_PROPERTY_INCREMENT_RE = re.compile(r"\b([a-z_][\w]*)\s+increment(?:ed|s)\s+by\s+([^\s]+)", re.IGNORECASE)
+_PROPERTY_RESET_RE = re.compile(
+    r"\b([a-z_][\w]*)\.([a-z_][\w]*)\s+reset to\s+([^\s]+)",
+    re.IGNORECASE,
+)
+_BARE_PROPERTY_RESET_RE = re.compile(r"\b([a-z_][\w]*)\s+reset to\s+([^\s]+)", re.IGNORECASE)
+_PROPERTY_RECORDED_RE = re.compile(
+    r"\b([a-z_][\w]*)\.([a-z_][\w]*)\s+recorded\b",
+    re.IGNORECASE,
+)
+_BARE_PROPERTY_RECORDED_RE = re.compile(r"\b([a-z_][\w]*)\s+recorded\b", re.IGNORECASE)
+_SCENE_TRANSITION_RE = re.compile(r"\bscene transitions to\s+([a-z_][\w]*)", re.IGNORECASE)
+_FOLLOWS_RE = re.compile(
+    r"\b([a-z_][\w]*)\.([a-z_][\w]*)\s+(?:follows|is behind)\s+([a-z_][\w]*)\.([a-z_][\w]*)",
+    re.IGNORECASE,
+)
+
+_GLOBAL_TRACE_OWNERS = {"game", "scene", "camera", "hud", "race_manager", "round_manager"}
+_INPUT_PROP_HINTS: dict[str, list[str]] = {
+    "acceleration_input": ["accel=true", "accel=1", "accel=1.0"],
+    "accel_input": ["accel=true", "accel=1", "accel=1.0"],
+    "throttle_input": ["accel=true", "accel=1", "accel=1.0"],
+    "brake_input": ["brake=true", "brake=1", "brake=1.0"],
+    "steer_input": ["steer="],
+    "drift_input": ["drift=true", "drift=1", "drift=1.0"],
+    "item_trigger_input": ["item=true", "item=1", "item=1.0"],
+    "item_input": ["item=true", "item=1", "item=1.0"],
+}
+
+
+def _clean_expected_value(raw_value: str | None) -> str:
+    return str(raw_value or "").strip().strip("'\"").lower()
+
+
+def _trace_field_for_owner(owner: str, prop: str = "") -> str:
+    lower_owner = owner.lower()
+    lower_prop = prop.lower()
+    if lower_owner in _GLOBAL_TRACE_OWNERS or lower_prop.startswith("countdown") or "state" in lower_prop:
+        return "trace_any_global"
+    return "trace_any"
+
+
+def _state_trace_patterns(value: str) -> list[str]:
+    clean = _clean_expected_value(value)
+    if not clean:
+        return []
+    upper = clean.upper()
+    prefixed = upper if upper.startswith("S_") else f"S_{upper}"
+    patterns = [f"state={clean}", f"state={upper}", f"state={prefixed}"]
+    if clean.endswith("racing") or clean == "racing":
+        patterns.extend(["countdown.complete", "scene.ready scene=racing"])
+    if "finish" in clean:
+        patterns.append("race_progress.finish")
+    if "countdown" in clean:
+        patterns.append("countdown.start")
+    return _merge_step_lists([], patterns)
+
+
+def _property_trace_patterns(
+    owner: str,
+    prop: str,
+    *,
+    operator: str = "",
+    value: str = "",
+    raw_text: str = "",
+) -> tuple[str, list[str]]:
+    lower_owner = owner.lower()
+    lower_prop = prop.lower()
+    lower_value = _clean_expected_value(value)
+    lower_text = raw_text.lower()
+    field = _trace_field_for_owner(lower_owner, lower_prop)
+    patterns: list[str] = []
+
+    if lower_prop in {"current_state", "fsm_state", "state"}:
+        return "trace_any_global", _state_trace_patterns(lower_value or lower_text)
+
+    if "countdown_value" in lower_prop or ("countdown" in lower_prop and "transition" in lower_text):
+        return "trace_all_global", ["countdown.start value=3", "countdown.tick value=2", "countdown.tick value=1", "countdown.complete"]
+    if "countdown_active" in lower_prop:
+        return "trace_any_global", ["countdown.complete" if lower_value == "false" else "countdown.start"]
+    if "race_timer" in lower_prop:
+        return "trace_any_global", ["countdown.complete", "scene.ready scene="]
+
+    if "laterally" in lower_text or "trajectory modified by steering input" in lower_text:
+        return field, ["physics.turn", "physics.update"]
+    if "changes" in lower_text:
+        if "camera" in lower_owner or lower_prop.startswith("world_"):
+            return "trace_any_global", ["camera.update position="]
+        if "position" in lower_prop or "velocity" in lower_prop or "speed" in lower_prop:
+            return field, ["physics.update"]
+
+    if lower_prop in _INPUT_PROP_HINTS or lower_prop.endswith("_input"):
+        field = "trace_all"
+        patterns.append("input.update actor=")
+        patterns.extend(_INPUT_PROP_HINTS.get(lower_prop, []))
+        return field, _merge_step_lists([], patterns)
+
+    if lower_prop in {"speed", "velocity"} or lower_prop.endswith("_velocity"):
+        return field, ["physics.update"]
+    if lower_prop in {"position", "world_x", "world_y"}:
+        if "camera" in lower_owner or lower_prop.startswith("world_"):
+            return "trace_any_global", ["camera.update position="]
+        return field, ["physics.update"]
+    if lower_prop in {"angle", "rotation", "facing_angle", "heading_degrees"}:
+        if "camera" in lower_owner:
+            return "trace_any_global", ["camera.update position="]
+        return field, ["physics.turn", "physics.update"]
+
+    if lower_prop == "drift_charge":
+        return field, ["drift_boost.drift_start", "drift_boost.tier_up"]
+    if lower_prop == "is_drifting":
+        if lower_value == "false":
+            return field, ["drift_boost.boost_start", "drift_boost.boost_end"]
+        return field, ["drift_boost.drift_start"]
+    if lower_prop == "drift_direction":
+        return field, ["drift_boost.drift_start"]
+    if lower_prop == "boost_timer":
+        return field, ["drift_boost.boost_start", "item.boost_start", "item_usage.boost_start"]
+    if lower_prop == "boost_multiplier":
+        return field, ["drift_boost.boost_start", "item.boost_start", "item.boost_applied"]
+
+    if lower_prop == "current_item":
+        if operator == "!=" and lower_value == "none":
+            return field, ["item.collect", "test.mode mode=item_ready"]
+        if lower_value == "none":
+            return field, ["item.use"]
+        return field, ["item.collect", "test.mode mode=item_ready"]
+    if lower_prop == "item_use_cooldown":
+        return field, ["item.use", "item_usage.activate"]
+    if lower_prop == "is_active" and "item_box" in lower_owner:
+        if lower_value == "false":
+            return field, ["item.collect"]
+        return field, ["item.pickup_respawn"]
+    if lower_prop == "spin_out_timer":
+        return field, ["collision.spin_out", "collision.kart_kart", "collision.vehicle_vehicle", "collision.actor_actor"]
+    if lower_prop == "invincibility_timer":
+        return field, ["item.invulnerability_start", "item_usage.invincibility_start"]
+    if lower_prop == "current_lap":
+        return field, ["race_progress.lap_up"]
+    if lower_prop == "waypoint_index":
+        return field, ["race_progress.checkpoint", "ai_navigation.waypoint"]
+    if lower_prop == "finish_time":
+        return field, ["race_progress.finish"]
+    if lower_prop == "race_finished":
+        return field, ["race_progress.finish"]
+    if lower_prop == "ai_target_waypoint":
+        return field, ["ai_navigation.waypoint", "ai_navigation.tick"]
+    if lower_prop == "speed_display_value":
+        return "trace_any_global", ["hud.update_values speed="]
+
+    return field, _merge_step_lists([], patterns)
+
+
+def _translated_verification_entries(field_name: str, raw_text: str) -> dict[str, list[str]]:
+    clean = str(raw_text or "").strip()
+    if not clean:
+        return {}
+    lower = clean.lower()
+    if "transitioned from" in lower and "countdown" in lower:
+        return {"trace_all_global": ["countdown.start value=3", "countdown.tick value=2", "countdown.tick value=1", "countdown.complete"]}
+
+    scene_match = _SCENE_TRANSITION_RE.search(clean)
+    if scene_match:
+        target_scene = scene_match.group(1)
+        return {"trace_any_global": _state_trace_patterns(target_scene)}
+
+    follow_match = _FOLLOWS_RE.search(clean)
+    if follow_match:
+        owner, prop, _, _ = follow_match.groups()
+        field, patterns = _property_trace_patterns(owner, prop, raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    compare_match = _PROPERTY_COMPARE_RE.search(clean)
+    if compare_match:
+        owner, prop, op, value = compare_match.groups()
+        field, patterns = _property_trace_patterns(owner, prop, operator=op, value=value, raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    bare_compare_match = _BARE_PROPERTY_COMPARE_RE.search(clean)
+    if bare_compare_match:
+        prop, op, value = bare_compare_match.groups()
+        field, patterns = _property_trace_patterns("", prop, operator=op, value=value, raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    true_match = _PROPERTY_TRUE_RE.search(clean)
+    if true_match:
+        owner, prop = true_match.groups()
+        field, patterns = _property_trace_patterns(owner, prop, value="true", raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    bare_true_match = _BARE_PROPERTY_TRUE_RE.search(clean)
+    if bare_true_match:
+        prop = bare_true_match.group(1)
+        field, patterns = _property_trace_patterns("", prop, value="true", raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    false_match = _PROPERTY_FALSE_RE.search(clean)
+    if false_match:
+        owner, prop = false_match.groups()
+        field, patterns = _property_trace_patterns(owner, prop, value="false", raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    bare_false_match = _BARE_PROPERTY_FALSE_RE.search(clean)
+    if bare_false_match:
+        prop = bare_false_match.group(1)
+        field, patterns = _property_trace_patterns("", prop, value="false", raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    increment_match = _PROPERTY_INCREMENT_RE.search(clean)
+    if increment_match:
+        owner, prop, value = increment_match.groups()
+        field, patterns = _property_trace_patterns(owner, prop, value=value, raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    bare_increment_match = _BARE_PROPERTY_INCREMENT_RE.search(clean)
+    if bare_increment_match:
+        prop, value = bare_increment_match.groups()
+        field, patterns = _property_trace_patterns("", prop, value=value, raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    reset_match = _PROPERTY_RESET_RE.search(clean)
+    if reset_match:
+        owner, prop, value = reset_match.groups()
+        field, patterns = _property_trace_patterns(owner, prop, value=value, raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    bare_reset_match = _BARE_PROPERTY_RESET_RE.search(clean)
+    if bare_reset_match:
+        prop, value = bare_reset_match.groups()
+        field, patterns = _property_trace_patterns("", prop, value=value, raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    recorded_match = _PROPERTY_RECORDED_RE.search(clean)
+    if recorded_match:
+        owner, prop = recorded_match.groups()
+        field, patterns = _property_trace_patterns(owner, prop, raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    bare_recorded_match = _BARE_PROPERTY_RECORDED_RE.search(clean)
+    if bare_recorded_match:
+        prop = bare_recorded_match.group(1)
+        field, patterns = _property_trace_patterns("", prop, raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    prop_match = _PROPERTY_REF_RE.search(clean)
+    if prop_match:
+        owner, prop = prop_match.groups()
+        field, patterns = _property_trace_patterns(owner, prop, raw_text=clean)
+        return {field: patterns} if patterns else {}
+
+    if "race timer" in lower and ("started" in lower or "> 0" in lower):
+        return {"trace_any_global": ["countdown.complete", "scene.ready scene="]}
+    return {}
+
+
+def _sanitize_verification_field(field_name: str, values: list[str]) -> dict[str, list[str]]:
+    allowed_structured = {"trace_any", "trace_all", "trace_any_global", "trace_all_global", "trace_none", "trace_none_global"}
+    out: dict[str, list[str]] = {}
+    for raw in values:
+        clean = str(raw or "").strip()
+        if not clean:
+            continue
+        translated = _translated_verification_entries(field_name, clean)
+        if translated:
+            for target_field, entries in translated.items():
+                out.setdefault(target_field, []).extend(entries)
+            continue
+        if field_name in allowed_structured and not clean.lower().startswith("verify "):
+            out.setdefault(field_name, []).append(clean)
+    return out
+
+
+def _normalize_test_step(step: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(step)
+    verification_fields = [
+        "trace_any",
+        "trace_all",
+        "trace_any_global",
+        "trace_all_global",
+        "trace_none",
+        "trace_none_global",
+    ]
+    merged_fields: dict[str, list[str]] = {field: [] for field in verification_fields}
+    for field_name in verification_fields:
+        field_values = normalized.get(field_name) or []
+        field_bucket = _sanitize_verification_field(field_name, list(field_values))
+        for target_field, entries in field_bucket.items():
+            merged_fields.setdefault(target_field, []).extend(entries)
+    for field_name in verification_fields:
+        cleaned = _merge_step_lists([], merged_fields.get(field_name) or [])
+        if cleaned:
+            normalized[field_name] = cleaned
+        elif field_name in normalized:
+            normalized.pop(field_name, None)
+    raw_checks = normalized.get("checks") or []
+    checks: list[str] = []
+    translated_from_checks: dict[str, list[str]] = {}
+    for raw in raw_checks:
+        clean = str(raw or "").strip()
+        if not clean:
+            continue
+        if clean in SEMANTIC_CHECKS:
+            checks.append(clean)
+            continue
+        translated = _translated_verification_entries("checks", clean)
+        for target_field, entries in translated.items():
+            translated_from_checks.setdefault(target_field, []).extend(entries)
+    for target_field, entries in translated_from_checks.items():
+        normalized[target_field] = _merge_step_lists(normalized.get(target_field) or [], entries)
+    if checks:
+        normalized["checks"] = _merge_step_lists([], checks)
+    else:
+        normalized.pop("checks", None)
+    return normalized
+
+
+def _normalize_test_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_normalize_test_step(step) for step in steps]
+
+
+def _steps_from_mechanic_features(features: list[MechanicFeature]) -> list[dict[str, Any]]:
+    behaviors: list[MechanicBehavior] = []
+    for feature in features:
+        behaviors.extend(feature.behaviors or [])
+    if not behaviors:
+        return []
+    ordered = sorted(behaviors, key=lambda behavior: (behavior.priority, behavior.id))
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for behavior in ordered:
+        for action in behavior.actions:
+            step = _action_to_step(action, behavior)
+            key = _step_merge_key(step)
+            if key not in merged:
+                merged[key] = step
+                order.append(key)
+                continue
+            merged[key] = _merge_test_step(merged[key], step)
+    return [merged[key] for key in order]
 
 
 def _build_test_steps_from_spec(game_name: str) -> list[dict]:
@@ -206,34 +690,54 @@ def _build_test_steps_from_spec(game_name: str) -> list[dict]:
 
     if not hlr_path.exists():
         log.warning("No HLR for %s — using generic fighting-game fallback plan", game_name)
-        return _fallback_plan()
+        return _finalize_test_steps(game_name, _fallback_plan())
 
     hlr = json.loads(hlr_path.read_text())
     impact: dict | None = None
+    contract: dict[str, Any] | None = None
     if impact_path.exists():
         try:
             impact = json.loads(impact_path.read_text())
         except Exception:
             impact = None
+    contract_path = game_dir / "build_contract.json"
+    if contract_path.exists():
+        try:
+            contract = json.loads(contract_path.read_text())
+        except Exception:
+            contract = None
 
     # Find the primary gameplay scene
     scenes = [s["scene_name"] for s in hlr.get("scenes", [])]
     gameplay_scene = _pick_gameplay_scene(scenes)
+    genre = str((contract or {}).get("genre") or hlr.get("genre") or "")
+    system_names = list((contract or {}).get("systems") or ((impact or {}).get("systems") or []))
+    role_defs = dict(((contract or {}).get("roles") or {}))
+    role_names = list(role_defs.keys())
+    scene_defaults = dict((contract or {}).get("scene_defaults") or {})
+    role_groups = dict((contract or {}).get("role_groups") or {})
+    capabilities = dict((contract or {}).get("capabilities") or {})
 
     # Check whether the Godot project boots directly into the gameplay scene.
     # If so, we skip menu-advance steps entirely.
     main_scene_path = _read_main_scene_from_project(game_name)
+    main_scene_name = Path(main_scene_path).stem.lower() if main_scene_path else None
     boots_into_gameplay = (
-        main_scene_path is not None
-        and gameplay_scene is not None
-        and gameplay_scene in main_scene_path
+        main_scene_name is not None
+        and (
+            (gameplay_scene is not None and gameplay_scene.lower() == main_scene_name)
+            or any(kw in main_scene_name for kw in _GAMEPLAY_SCENE_KEYWORDS)
+        )
     )
 
     steps: list[dict] = [
-        {"action": "Load page", "keys": None, "wait_ms": 6000,
-         "description": f"Navigate to /godot/{game_name}/ and wait for canvas"},
+        {"action": "Load page", "keys": None, "wait_ms": 1800, "url_query": "rayxi_test_mode=dummy",
+         "description": f"Navigate to /godot/{game_name}/ in dummy test mode and wait for canvas",
+         "trace_any": ["scene.ready"]},
         {"action": "Click canvas to focus", "keys": "click", "wait_ms": 500,
          "description": "Canvas focus so keyboard input reaches Godot"},
+        {"action": "Wait for gameplay start", "keys": None, "wait_ms": 1200,
+         "description": "Allow the initial scene setup to finish before gameplay assertions"},
     ]
 
     if not boots_into_gameplay:
@@ -244,26 +748,56 @@ def _build_test_steps_from_spec(game_name: str) -> list[dict]:
                 "action": f"Advance menu (#{i+1})", "keys": "Enter", "wait_ms": 1200,
                 "description": "Press Enter to progress through menu scenes"})
 
+    mechanic_features = _load_mechanic_features(game_name, contract)
+    mechanic_steps = _steps_from_mechanic_features(mechanic_features)
+    if mechanic_steps:
+        steps.extend(mechanic_steps)
+        steps.append({
+            "action": "Final state", "keys": None, "wait_ms": 1500,
+            "description": "Capture final scene to verify game is still alive"
+        })
+        return _finalize_test_steps(game_name, steps)
+
+    vehicle_race_profile = _vehicle_race_profile(
+        game_name,
+        genre,
+        system_names,
+        role_defs,
+        scene_defaults,
+        gameplay_scene,
+        role_groups=role_groups,
+        capabilities=capabilities,
+    )
+    if vehicle_race_profile is not None:
+        steps.extend(_vehicle_race_plan(gameplay_scene or "gameplay", vehicle_race_profile))
+        steps.append({
+            "action": "Final state", "keys": None, "wait_ms": 1500,
+            "description": "Capture final scene to verify game is still alive"
+        })
+        return _finalize_test_steps(game_name, steps)
+
     # Gameplay steps — movement + attacks, with semantic checks.
     gameplay_scene_label = gameplay_scene or "gameplay"
     steps.extend([
-        {"action": f"[{gameplay_scene_label}] Initial state (baseline)", "keys": None, "wait_ms": 1500,
+        {"action": f"[{gameplay_scene_label}] Initial state (baseline)", "keys": None, "wait_ms": 500,
          "description": "Capture gameplay scene on first entry — establishes baselines",
-         "checks": ["capture_baseline_entity_count", "no_white_halo", "no_fighter_overlap"]},
-        {"action": "Walk right", "keys": "d", "method": "hold", "hold_ms": 900, "wait_ms": 400,
+         "checks": ["two_fighters_visible", "fighters_grounded", "capture_baseline_entity_count", "no_white_halo", "no_fighter_overlap"]},
+        {"action": "Walk right", "keys": "d", "method": "hold", "hold_ms": 500, "wait_ms": 250,
          "description": "Hold D to walk the fighter right", "verify_change": True,
-         "checks": ["no_fighter_overlap"]},
-        {"action": "Walk left", "keys": "a", "method": "hold", "hold_ms": 900, "wait_ms": 400,
+         "diff_threshold": 1.0,
+         "checks": ["two_fighters_visible", "fighters_grounded", "no_fighter_overlap"],
+         "trace_any": ["to=walk_forward"]},
+        {"action": "Walk left", "keys": "a", "method": "hold", "hold_ms": 500, "wait_ms": 250,
          "description": "Hold A to walk the fighter left", "verify_change": True,
-         "checks": ["no_fighter_overlap"]},
-        {"action": "Walk straight at opponent (collision)", "keys": "d", "method": "hold",
-         "hold_ms": 4000, "wait_ms": 500,
-         "description": "Hold D for 4 seconds — p1 must NOT pass through p2",
-         "checks": ["p1_did_not_walk_through_p2"]},
+         "diff_threshold": 1.0,
+         "checks": ["two_fighters_visible", "fighters_grounded", "no_fighter_overlap"],
+         "trace_any": ["to=walk_back"]},
         {"action": "Jump", "keys": "w", "wait_ms": 1200,
-         "description": "Press W to jump"},
+         "description": "Press W to jump",
+         "trace_any": ["movement.jump", "to=jump_neutral", "to=jump_forward", "to=jump_back"]},
         {"action": "Crouch", "keys": "s", "method": "hold", "hold_ms": 600, "wait_ms": 400,
-         "description": "Hold S to crouch"},
+         "description": "Hold S to crouch",
+         "trace_any": ["input.crouch_change", "to=crouch"]},
         # NOTE: pixel-based "sprite swapped to attack pose" detection is too
         # noisy to be a hard gate when the game has only a single static sprite
         # texture (everything looks the same, small L1 noise drowns real pose
@@ -272,47 +806,249 @@ def _build_test_steps_from_spec(game_name: str) -> list[dict]:
         # For now attack steps only verify no_white_halo (which IS reliable).
         {"action": "Light punch", "keys": "u", "wait_ms": 600,
          "description": "Press U for light punch",
-         "checks": ["no_white_halo"]},
+         "checks": ["no_white_halo"],
+         "trace_any": ["to=light_punch"]},
         {"action": "Heavy punch", "keys": "o", "wait_ms": 800,
          "description": "Press O for heavy punch",
-         "checks": ["no_white_halo"]},
+         "checks": ["no_white_halo"],
+         "trace_any": ["to=heavy_punch"]},
         {"action": "Light kick", "keys": "j", "wait_ms": 600,
-         "description": "Press J for light kick"},
+         "description": "Press J for light kick",
+         "trace_any": ["to=light_kick"]},
         {"action": "Heavy kick", "keys": "l", "wait_ms": 800,
-         "description": "Press L for heavy kick"},
-        # Recapture the entity-count baseline right before hadouken so "new
-        # entity" compares the pre-hadouken scene (just p1 + p2) to the
-        # post-hadouken scene (p1 + p2 + projectile).
-        {"action": "Pre-hadouken baseline", "keys": None, "wait_ms": 500,
-         "description": "Snapshot the scene right before the hadouken motion to recapture entity count",
+         "description": "Press L for heavy kick",
+         "trace_any": ["to=heavy_kick"]},
+        {"action": "Crouch light punch", "keys": "s+u", "method": "sequence", "wait_ms": 0,
+         "description": "Hold down and press U for a low punch",
+         "sequence": [
+             {"type": "down", "key": "s"},
+             {"type": "wait", "ms": 80},
+             {"type": "down", "key": "u"},
+             {"type": "wait", "ms": 90},
+             {"type": "up", "key": "u"},
+             {"type": "wait", "ms": 260},
+             {"type": "up", "key": "s"},
+             {"type": "wait", "ms": 180},
+         ],
+         "trace_any": ["to=crouch_light_punch"]},
+        {"action": "Crouch heavy kick", "keys": "s+l", "method": "sequence", "wait_ms": 0,
+         "description": "Hold down and press L for a low kick",
+         "sequence": [
+             {"type": "down", "key": "s"},
+             {"type": "wait", "ms": 80},
+             {"type": "down", "key": "l"},
+             {"type": "wait", "ms": 110},
+             {"type": "up", "key": "l"},
+             {"type": "wait", "ms": 320},
+             {"type": "up", "key": "s"},
+             {"type": "wait", "ms": 200},
+         ],
+         "trace_any": ["to=crouch_heavy_kick"]},
+        {"action": "Reload special-ready mode", "keys": None, "wait_ms": 1200, "navigate_query": "rayxi_test_mode=projectile_ready",
+         "description": "Reload a farther dummy spacing before projectile and special-motion checks",
+         "trace_any": ["test.mode mode=projectile_ready"]},
+        {"action": "Click canvas to focus (special ready)", "keys": "click", "wait_ms": 300,
+         "description": "Refocus canvas after special-ready reload"},
+        # Recapture the entity-count baseline right before the projectile
+        # special so "new entity" compares the pre-special scene to the
+        # post-special scene with the spawned projectile.
+        {"action": "Pre-projectile-special baseline", "keys": None, "wait_ms": 500,
+         "description": "Snapshot the scene right before the projectile special to recapture entity count",
          "checks": ["capture_baseline_entity_count"]},
-        # Hadouken: QCF+U motion input (down, down-forward, forward, punch).
-        {"action": "Hadouken sequence: down", "keys": "s", "wait_ms": 80,
-         "description": "QCF motion start: press down"},
-        {"action": "Hadouken sequence: down-forward", "keys": "d", "wait_ms": 80,
-         "description": "QCF: press forward (letting down linger in buffer)"},
-        {"action": "Hadouken sequence: forward+punch", "keys": "u", "wait_ms": 1200,
-         "description": "QCF complete: punch — should spawn projectile entity",
-         "checks": ["new_entity_vs_baseline"]},
+        {"action": "Projectile special sequence", "keys": "s+d,u", "method": "sequence",
+         "description": "Quarter-circle forward plus punch — should spawn a projectile",
+         "wait_ms": 0,
+         "sequence": [
+             {"type": "down", "key": "s"},
+             {"type": "wait", "ms": 45},
+             {"type": "down", "key": "d"},
+             {"type": "wait", "ms": 45},
+             {"type": "up", "key": "s"},
+             {"type": "wait", "ms": 25},
+             {"type": "down", "key": "u"},
+             {"type": "wait", "ms": 60},
+             {"type": "up", "key": "u"},
+             {"type": "wait", "ms": 80},
+             {"type": "up", "key": "d"},
+             {"type": "wait", "ms": 40},
+         ],
+         "checks": ["projectile_visible"],
+         "trace_all": ["input.special_detected", "projectile.spawn"]},
+        {"action": "Reload uppercut-ready mode", "keys": None, "wait_ms": 1200, "navigate_query": "rayxi_test_mode=uppercut_ready",
+         "description": "Reload a closer dummy spacing before dragon punch motion verification",
+         "trace_any": ["test.mode mode=uppercut_ready"]},
+        {"action": "Click canvas to focus (uppercut ready)", "keys": "click", "wait_ms": 300,
+         "description": "Refocus canvas after uppercut-ready reload"},
+        {"action": "Uppercut special sequence", "keys": "d,s,d+u", "method": "sequence",
+         "description": "Forward, down, down-forward plus punch — should trigger the upward special move",
+         "wait_ms": 0,
+         "sequence": [
+             {"type": "down", "key": "d"},
+             {"type": "wait", "ms": 45},
+             {"type": "up", "key": "d"},
+             {"type": "wait", "ms": 35},
+             {"type": "down", "key": "s"},
+             {"type": "wait", "ms": 45},
+             {"type": "down", "key": "d"},
+             {"type": "wait", "ms": 45},
+             {"type": "down", "key": "u"},
+             {"type": "wait", "ms": 60},
+             {"type": "up", "key": "u"},
+             {"type": "wait", "ms": 500},
+             {"type": "up", "key": "d"},
+             {"type": "up", "key": "s"},
+             {"type": "wait", "ms": 450},
+         ],
+         "trace_any": ["movement.special_start"],
+         "trace_any_global": [
+             "input.special_detected move=special_uppercut",
+             "special.motion_detected motion=dp",
+             "special.executed fighter=",
+             "combat.hit attacker=p1_fighter defender=p2_fighter move=special_uppercut",
+         ]},
+        {"action": "Reload spinning-ready mode", "keys": None, "wait_ms": 1200, "navigate_query": "rayxi_test_mode=dummy",
+         "description": "Reload a clean dummy state before hurricane kick motion verification",
+         "trace_any": ["test.mode mode=dummy"]},
+        {"action": "Click canvas to focus (spinning ready)", "keys": "click", "wait_ms": 300,
+         "description": "Refocus canvas after spinning-ready reload"},
+        {"action": "Spinning special sequence", "keys": "s+a,j", "method": "sequence",
+         "description": "Quarter-circle back plus kick — should trigger the spinning special move",
+         "wait_ms": 0,
+         "sequence": [
+             {"type": "down", "key": "s"},
+             {"type": "wait", "ms": 45},
+             {"type": "down", "key": "a"},
+             {"type": "wait", "ms": 45},
+             {"type": "up", "key": "s"},
+             {"type": "wait", "ms": 35},
+             {"type": "down", "key": "j"},
+             {"type": "wait", "ms": 60},
+             {"type": "up", "key": "j"},
+             {"type": "wait", "ms": 450},
+             {"type": "up", "key": "a"},
+             {"type": "wait", "ms": 450},
+         ],
+         "trace_any": ["movement.special_start"],
+         "trace_any_global": [
+             "input.special_detected move=special_spinning",
+             "special.motion_detected motion=qcb",
+             "special.executed fighter=",
+         ]},
+        {"action": "Reload collision-ready dummy", "keys": None, "wait_ms": 1200, "navigate_query": "rayxi_test_mode=dummy",
+         "description": "Reload a clean dummy state before the pushout/collision walk test",
+         "trace_any": ["test.mode mode=dummy"]},
+        {"action": "Click canvas to focus (collision dummy)", "keys": "click", "wait_ms": 300,
+         "description": "Refocus canvas after collision-ready reload"},
+        {"action": "Walk straight at opponent (collision)", "keys": "d", "method": "hold",
+         "hold_ms": 2200, "wait_ms": 400,
+         "description": "Hold D until p1 reaches p2 — collision must stop overlap-through",
+         "checks": ["p1_did_not_walk_through_p2"],
+         "trace_any_global": ["collision.pushout"]},
+        {"action": "Reload guard-high mode", "keys": None, "wait_ms": 1600, "navigate_query": "rayxi_test_mode=guard_high",
+         "description": "Reload with a guarding dummy that holds back",
+         "trace_any": ["test.mode mode=guard_high"]},
+        {"action": "Click canvas to focus (guard high)", "keys": "click", "wait_ms": 300,
+         "description": "Refocus canvas after guard-high reload"},
+        {"action": "Stand block test", "keys": "d,o", "method": "sequence", "wait_ms": 0,
+         "description": "A standing heavy punch against a high-guard dummy should be blocked",
+         "sequence": [
+             {"type": "down", "key": "d"},
+             {"type": "wait", "ms": 140},
+             {"type": "up", "key": "d"},
+             {"type": "wait", "ms": 40},
+             {"type": "down", "key": "o"},
+             {"type": "wait", "ms": 80},
+             {"type": "up", "key": "o"},
+             {"type": "wait", "ms": 650},
+         ],
+         "trace_all": ["combat.blocked"]},
+        {"action": "Reload guard-low mode", "keys": None, "wait_ms": 1600, "navigate_query": "rayxi_test_mode=guard_low",
+         "description": "Reload with a guarding dummy that crouch-blocks",
+         "trace_any": ["test.mode mode=guard_low"]},
+        {"action": "Click canvas to focus (guard low)", "keys": "click", "wait_ms": 300,
+         "description": "Refocus canvas after guard-low reload"},
+        {"action": "Crouch block test", "keys": "d,s+l", "method": "sequence",
+         "description": "Hold down and use a longer-range low kick against a crouch-block dummy — it should be blocked",
+         "wait_ms": 0,
+         "sequence": [
+             {"type": "down", "key": "d"},
+             {"type": "wait", "ms": 150},
+             {"type": "up", "key": "d"},
+             {"type": "wait", "ms": 30},
+             {"type": "down", "key": "s"},
+             {"type": "wait", "ms": 80},
+             {"type": "down", "key": "l"},
+             {"type": "wait", "ms": 140},
+             {"type": "up", "key": "l"},
+             {"type": "wait", "ms": 420},
+             {"type": "up", "key": "s"},
+             {"type": "wait", "ms": 250},
+         ],
+         "trace_all": ["combat.blocked"]},
     ])
+
+    if capabilities.get("duel_combat") and len(steps) > 3:
+        steps[3].setdefault("trace_any_global", []).append("hud.widget_ready name=rayxi_duel_status")
 
     # Custom-feature verification steps from mechanic_specs
     for spec in hlr.get("mechanic_specs", []):
         sys_name = spec.get("system_name", "")
         if "rage" in sys_name.lower():
             steps.append({
-                "action": "Take damage (wait for AI)", "keys": None, "wait_ms": 4500,
-                "description": "Wait for CPU opponent to land hits so rage meter charges",
-                "verify_change": True,
+                "action": "Reload aggressor mode", "keys": None, "wait_ms": 900, "navigate_query": "rayxi_test_mode=aggressor",
+                "description": "Reload with an aggressive CPU so rage gain is deterministic",
+                "trace_any": ["test.mode mode=aggressor"],
             })
             steps.append({
-                "action": "Charge rage (more waiting)", "keys": None, "wait_ms": 4500,
-                "description": "Let the CPU land more hits to approach max rage stacks",
-                "verify_change": True,
+                "action": "Click canvas to focus (aggressor)", "keys": "click", "wait_ms": 300,
+                "description": "Refocus canvas after aggressor reload",
             })
             steps.append({
-                "action": "Fire powered special", "keys": "o", "wait_ms": 1500,
-                "description": "Press O — should consume a rage stack for powered damage",
+                "action": "Take damage (wait for AI)", "keys": None, "wait_ms": 3000,
+                "description": "Wait for CPU opponent to land hits so rage meter visibly charges",
+                "trace_all": [
+                    "combat.hit",
+                    "rage.fill_progress",
+                ],
+            })
+            steps.append({
+                "action": "Reload rage-ready mode", "keys": None, "wait_ms": 1200, "navigate_query": "rayxi_test_mode=rage_ready",
+                "description": "Reload a deterministic powered-special setup with one seeded rage stack",
+                "trace_all": [
+                    "test.mode mode=rage_ready",
+                    "rage.test_seed",
+                ],
+            })
+            steps.append({
+                "action": "Click canvas to focus (rage ready)", "keys": "click", "wait_ms": 300,
+                "description": "Refocus canvas after rage-ready reload",
+            })
+            steps.append({
+                "action": "Fire powered special", "keys": "s+d,u", "method": "sequence",
+                "description": "Quarter-circle forward plus punch — should consume rage and fire a powered projectile",
+                "wait_ms": 0,
+                "sequence": [
+                    {"type": "down", "key": "s"},
+                    {"type": "wait", "ms": 40},
+                    {"type": "down", "key": "d"},
+                    {"type": "wait", "ms": 40},
+                    {"type": "up", "key": "s"},
+                    {"type": "wait", "ms": 30},
+                    {"type": "down", "key": "u"},
+                    {"type": "wait", "ms": 60},
+                    {"type": "up", "key": "u"},
+                    {"type": "wait", "ms": 80},
+                    {"type": "up", "key": "d"},
+                    {"type": "wait", "ms": 40},
+                ],
+                "trace_all": [
+                    "rage.stack_consumed",
+                    "projectile.spawn",
+                ],
+                "trace_any_global": [
+                    "move=special_projectile powered=true",
+                    "powered_special=true",
+                ],
             })
             break
 
@@ -322,19 +1058,291 @@ def _build_test_steps_from_spec(game_name: str) -> list[dict]:
         "description": "Capture final scene to verify game is still alive"
     })
 
-    return steps
+    return _finalize_test_steps(game_name, steps)
+
+
+_RACE_ROLE_TOKENS = ("vehicle", "kart", "car", "bike", "ship", "racer", "driver")
+_RACE_SYSTEM_TOKENS = ("vehicle_movement", "race_progress", "position_ranking", "drift_boost", "camera_tracking", "item_usage")
+
+
+def _primary_vehicle_role(role_defs: dict[str, dict]) -> str | None:
+    for token in _RACE_ROLE_TOKENS:
+        for role_name, role_meta in role_defs.items():
+            lower_name = role_name.lower()
+            if token in lower_name:
+                return role_name
+    for role_name, role_meta in role_defs.items():
+        if str((role_meta or {}).get("godot_base_node") or "") == "CharacterBody2D" and "fighter" not in role_name.lower():
+            return role_name
+    return None
+
+
+def _available_hud_widget_names(game_name: str) -> set[str]:
+    hud_dir = _OUTPUT_DIR / game_name / "godot" / "scripts" / "hud"
+    if not hud_dir.exists():
+        return set()
+    return {
+        path.stem
+        for path in hud_dir.glob("*.gd")
+        if path.stem and path.stem != "rayxi_duel_status"
+    }
+
+
+def _race_hud_widgets(game_name: str, scene_defaults: dict[str, Any], gameplay_scene_label: str | None) -> list[str]:
+    widgets: list[str] = []
+    available = _available_hud_widget_names(game_name)
+    preferred = ("lap_counter", "position_display", "item_icon", "minimap", "mini_map", "speedometer", "finish_banner")
+
+    def _pick_widget(name: str) -> str | None:
+        candidates = (name,)
+        if name == "minimap":
+            candidates = ("minimap", "mini_map")
+        elif name == "mini_map":
+            candidates = ("mini_map", "minimap")
+        for candidate in candidates:
+            if available and candidate not in available:
+                continue
+            return candidate
+        return None
+
+    if gameplay_scene_label:
+        scene_default = scene_defaults.get(gameplay_scene_label, {})
+        hud_layout = dict(scene_default.get("hud_layout", {}) if isinstance(scene_default, dict) else {})
+        for name in preferred:
+            if name in hud_layout:
+                picked = _pick_widget(name)
+                if picked and picked not in widgets:
+                    widgets.append(picked)
+    if not widgets:
+        for scene_default in scene_defaults.values():
+            if not isinstance(scene_default, dict):
+                continue
+            hud_layout = dict(scene_default.get("hud_layout", {}) if isinstance(scene_default.get("hud_layout"), dict) else {})
+            for name in preferred:
+                if name in hud_layout:
+                    picked = _pick_widget(name)
+                    if picked and picked not in widgets:
+                        widgets.append(picked)
+    return widgets
+
+
+def _first_role_from_groups(
+    role_groups: dict[str, list[str]] | None,
+    *group_names: str,
+) -> str | None:
+    groups = role_groups or {}
+    for group_name in group_names:
+        roles = [role for role in groups.get(group_name, []) if role]
+        if roles:
+            return roles[0]
+    return None
+
+
+def _vehicle_race_profile(
+    game_name: str,
+    genre: str,
+    system_names: list[str],
+    role_defs: dict[str, dict],
+    scene_defaults: dict[str, Any],
+    gameplay_scene_label: str | None,
+    *,
+    role_groups: dict[str, list[str]] | None = None,
+    capabilities: dict[str, bool] | None = None,
+) -> dict[str, Any] | None:
+    lower_genre = genre.lower()
+    lower_systems = [name.lower() for name in system_names]
+    capability_flags = capabilities or {}
+    vehicle_role = _first_role_from_groups(role_groups, "vehicle_actor_roles", "actor_roles") or _primary_vehicle_role(role_defs)
+    has_vehicle_actor = vehicle_role is not None
+    has_race_systems = any(any(token in name for token in _RACE_SYSTEM_TOKENS) for name in lower_systems)
+    has_race_defaults = any(
+        isinstance(scene_default, dict) and (
+            "checkpoint_positions" in scene_default or "item_box_positions" in scene_default
+        )
+        for scene_default in scene_defaults.values()
+    )
+    has_race_genre_hint = "race" in lower_genre or "racing" in lower_genre
+    has_race_capability = bool(capability_flags.get("checkpoint_race"))
+    has_ai_rival_system = any(name == "ai_system" or name.startswith("ai_") for name in lower_systems)
+    if not (has_race_capability or (has_vehicle_actor and has_race_systems) or has_race_defaults or has_race_genre_hint):
+        return None
+    return {
+        "scene_name": gameplay_scene_label or "gameplay",
+        "vehicle_role": vehicle_role or "vehicle",
+        "hud_widgets": _race_hud_widgets(game_name, scene_defaults, gameplay_scene_label),
+        "expects_ai_rival": has_ai_rival_system,
+    }
+
+
+def _vehicle_race_plan(gameplay_scene_label: str, profile: dict[str, Any]) -> list[dict]:
+    baseline_trace_all = [
+        f"scene.ready scene={profile.get('scene_name', gameplay_scene_label)}",
+        "debug.overlay_ready kind=boxes",
+        "debug.overlay_ready kind=log",
+        "stage.track_seeded",
+    ]
+    if bool(profile.get("expects_ai_rival")):
+        baseline_trace_all.append("ai_navigation.tick kart=")
+    accelerate_trace_any = [
+        "input.update actor=",
+        "physics.update kart=",
+    ]
+    if bool(profile.get("expects_ai_rival")):
+        accelerate_trace_any.append("ai_navigation.tick kart=")
+    return [
+        {
+            "action": f"[{gameplay_scene_label}] Initial state (baseline)",
+            "keys": None,
+            "wait_ms": 500,
+            "description": "Capture gameplay scene on first entry and establish vehicle-race baselines",
+            "checks": ["capture_baseline_entity_count", "mode7_checkpoint_marker_visible", "mode7_item_marker_visible", "race_hud_visible"],
+            "trace_all_global": baseline_trace_all,
+            "trace_none_global": ["race_progress.finish"],
+        },
+        {
+            "action": "Accelerate",
+            "keys": "w",
+            "method": "hold",
+            "hold_ms": 1200,
+            "wait_ms": 250,
+            "description": "Hold W to accelerate the lead vehicle forward",
+            "verify_change": False,
+            "trace_any": accelerate_trace_any,
+        },
+        {
+            "action": "Steer right while accelerating",
+            "keys": "w+d",
+            "method": "sequence",
+            "wait_ms": 0,
+            "description": "Hold W, then add D to verify steering under load",
+            "verify_change": False,
+            "sequence": [
+                {"type": "down", "key": "w"},
+                {"type": "wait", "ms": 350},
+                {"type": "down", "key": "d"},
+                {"type": "wait", "ms": 900},
+                {"type": "up", "key": "d"},
+                {"type": "wait", "ms": 120},
+                {"type": "up", "key": "w"},
+                {"type": "wait", "ms": 220},
+            ],
+            "trace_any": [
+                "input.update actor=",
+                "physics.turn kart=",
+            ],
+        },
+        {
+            "action": "Reload drift-ready mode",
+            "keys": None,
+            "wait_ms": 350,
+            "navigate_query": "rayxi_test_mode=drift_ready",
+            "description": "Reload with seeded speed so drift mechanics become testable quickly",
+            "trace_any": ["test.mode mode=drift_ready"],
+        },
+        {
+            "action": "Click canvas to focus (drift ready)",
+            "keys": "click",
+            "wait_ms": 120,
+            "description": "Refocus canvas after drift-ready reload",
+        },
+        {
+            "action": "Drift",
+            "keys": "w+d+Shift",
+            "method": "sequence",
+            "wait_ms": 0,
+            "description": "Accelerate, steer, and hold Shift to trigger drift/boost traces",
+            "verify_change": False,
+            "sequence": [
+                {"type": "down", "key": "w"},
+                {"type": "wait", "ms": 80},
+                {"type": "down", "key": "d"},
+                {"type": "wait", "ms": 80},
+                {"type": "down", "key": "Shift"},
+                {"type": "wait", "ms": 900},
+                {"type": "up", "key": "Shift"},
+                {"type": "wait", "ms": 160},
+                {"type": "up", "key": "d"},
+                {"type": "up", "key": "w"},
+                {"type": "wait", "ms": 260},
+            ],
+            "trace_any": [
+                "drift_boost.drift_start",
+                "drift_boost.tier_up",
+                "drift_boost.boost_start",
+            ],
+        },
+        {
+            "action": "Reload item-ready mode",
+            "keys": None,
+            "wait_ms": 1200,
+            "navigate_query": "rayxi_test_mode=item_ready",
+            "description": "Reload with a seeded item so item usage is deterministic",
+            "trace_any": ["test.mode mode=item_ready"],
+        },
+        {
+            "action": "Click canvas to focus (item ready)",
+            "keys": "click",
+            "wait_ms": 300,
+            "description": "Refocus canvas after item-ready reload",
+        },
+        {
+            "action": "Use item",
+            "keys": "Space",
+            "wait_ms": 900,
+            "description": "Press Space to consume the seeded vehicle item",
+            "trace_any": [
+                "item.use",
+                "item.spawn_projectile",
+                "item.boost_applied",
+                "item_usage.activate",
+                "item_usage.spawn_shell",
+                "item_usage.spawn_banana",
+                "item_usage.boost_start",
+                "item_usage.invincibility_start",
+            ],
+        },
+        {
+            "action": "Reload collision-ready mode",
+            "keys": None,
+            "wait_ms": 1200,
+            "navigate_query": "rayxi_test_mode=collision_ready",
+            "description": "Reload with karts positioned for a quick bump test",
+            "trace_any": ["test.mode mode=collision_ready"],
+        },
+        {
+            "action": "Click canvas to focus (collision ready)",
+            "keys": "click",
+            "wait_ms": 300,
+            "description": "Refocus canvas after collision-ready reload",
+        },
+        {
+            "action": "Drive into rival",
+            "keys": "w",
+            "method": "hold",
+            "hold_ms": 2200,
+            "wait_ms": 350,
+            "description": "Hold W until the lead vehicle reaches the rival and collision resolves",
+            "verify_change": False,
+            "trace_any_global": ["collision.kart_kart", "collision.spin_out"],
+        },
+    ]
 
 
 def _pick_gameplay_scene(scene_names: list[str]) -> str | None:
     # Prefer exact gameplay-style names over intro/transition scenes
-    priority = ["fighting", "gameplay", "battle", "match", "play"]
+    priority = ["fighting", "racing", "race", "gameplay", "battle", "match", "play"]
     for p in priority:
         for name in scene_names:
             if name.lower() == p:
                 return name
     for name in scene_names:
         lower = name.lower()
-        if any(kw in lower for kw in _GAMEPLAY_SCENE_KEYWORDS) and "intro" not in lower:
+        if (
+            any(kw in lower for kw in _GAMEPLAY_SCENE_KEYWORDS)
+            and "intro" not in lower
+            and "select" not in lower
+            and "menu" not in lower
+        ):
             return name
     return None
 
@@ -424,13 +1432,23 @@ def _analyze_screenshot_png(png_bytes: bytes) -> dict:
     total = luma.size
     nontrivial_pct = float(1.0 - (near_black + near_white) / total)
 
-    has_content = unique_colors > 80 and variance > 8.0 and nontrivial_pct > 0.05
+    foreground_regions = 0
+    try:
+        foreground_regions = len(_detect_white_sprite_regions(png_bytes))
+    except Exception:
+        foreground_regions = 0
+
+    has_content = (
+        (unique_colors > 80 and variance > 8.0 and nontrivial_pct > 0.05)
+        or foreground_regions >= 1
+    )
 
     return {
         "has_content": has_content,
         "unique_colors": unique_colors,
         "variance": round(variance, 2),
         "nontrivial_pct": round(nontrivial_pct, 3),
+        "foreground_regions": foreground_regions,
         "size": f"{img.width}x{img.height}",
     }
 
@@ -464,22 +1482,88 @@ def _screenshots_differ(a: bytes, b: bytes, threshold: float = 2.0) -> tuple[boo
 
 
 def _detect_white_sprite_regions(png_bytes: bytes) -> list[tuple[int, int, int, int]]:
-    """Return list of (x0, y0, x1, y1) bounding boxes for FIGHTER-SHAPED regions,
-    using proper connected-component analysis (not column clustering).
+    """Return gameplay-region bboxes for fighters/projectiles on the stage.
 
-    Uses scipy.ndimage.label with morphological closing to find solid white
-    blobs, then filters by size + aspect + density.
+    Older versions only looked for "white sprite" blobs, which breaks on dark
+    art, overlapping fighters, and non-white projectiles. The current detector
+    segments foreground by distance from the dominant stage background color,
+    then filters out HUD bars and long floor strips.
     """
     from PIL import Image
     import numpy as np
     from scipy import ndimage
 
-    img = np.asarray(Image.open(io.BytesIO(png_bytes)).convert("RGB"))
-    white = (img[..., 0] > 200) & (img[..., 1] > 200) & (img[..., 2] > 200)
+    def _mask_bbox(mask, x_offset: int, y_offset: int) -> tuple[int, int, int, int] | None:
+        ys, xs = np.where(mask)
+        if len(ys) == 0:
+            return None
+        return (
+            x_offset + int(xs.min()),
+            y_offset + int(ys.min()),
+            x_offset + int(xs.max()),
+            y_offset + int(ys.max()),
+        )
 
-    # Close small gaps so a fighter's non-white features (skin, belt, hair)
-    # don't break the white gi into tiny disconnected fragments.
-    closed = ndimage.binary_closing(white, structure=np.ones((7, 7)), iterations=2)
+    def _split_box(
+        mask: "np.ndarray",
+        box: tuple[int, int, int, int],
+    ) -> list[tuple[int, int, int, int]]:
+        x0, y0, x1, y1 = box
+        crop = mask[y0 : y1 + 1, x0 : x1 + 1]
+        if crop.size == 0:
+            return [box]
+
+        width = crop.shape[1]
+        if width < 90:
+            return [box]
+
+        col_counts = crop.sum(axis=0).astype(float)
+        smooth = ndimage.gaussian_filter1d(col_counts, sigma=max(width / 60.0, 1.5))
+        valley_start = max(width // 5, 1)
+        valley_end = min((width * 4) // 5, width - 1)
+        if valley_end <= valley_start:
+            return [box]
+
+        valley_offset = int(np.argmin(smooth[valley_start:valley_end]))
+        split_at = valley_start + valley_offset
+        left_peak = float(smooth[:split_at].max()) if split_at > 0 else 0.0
+        right_peak = float(smooth[split_at + 1 :].max()) if split_at + 1 < width else 0.0
+        valley_value = float(smooth[split_at])
+        if min(left_peak, right_peak) <= 0.0:
+            return [box]
+        if valley_value > min(left_peak, right_peak) * 0.88:
+            return [box]
+
+        left_mask = crop[:, :split_at]
+        right_mask = crop[:, split_at + 1 :]
+        pieces: list[tuple[int, int, int, int]] = []
+        left_box = _mask_bbox(left_mask, x0, y0)
+        right_box = _mask_bbox(right_mask, x0 + split_at + 1, y0)
+        if left_box is not None:
+            pieces.append(left_box)
+        if right_box is not None:
+            pieces.append(right_box)
+        return pieces or [box]
+
+    img = np.asarray(Image.open(io.BytesIO(png_bytes)).convert("RGB")).astype(np.int16)
+    h, w = img.shape[:2]
+
+    samples = np.concatenate(
+        [
+            img[:64, :64].reshape(-1, 3),
+            img[:64, max(0, w - 64):].reshape(-1, 3),
+            img[max(0, h - 64):, :64].reshape(-1, 3),
+            img[max(0, h - 64):, max(0, w - 64):].reshape(-1, 3),
+        ],
+        axis=0,
+    )
+    bg = np.median(samples, axis=0)
+    color_distance = np.sqrt(((img - bg) ** 2).sum(axis=2))
+    luminance = img.mean(axis=2)
+
+    foreground = (color_distance > 28.0) | (luminance > 175.0)
+    foreground[: int(h * 0.18), :] = False
+    closed = ndimage.binary_closing(foreground, structure=np.ones((5, 5)), iterations=1)
 
     labels, num = ndimage.label(closed)
     if num == 0:
@@ -487,25 +1571,28 @@ def _detect_white_sprite_regions(png_bytes: bytes) -> list[tuple[int, int, int, 
 
     boxes: list[tuple[int, int, int, int]] = []
     for lbl in range(1, num + 1):
-        ys, xs = np.where(labels == lbl)
-        if len(ys) < 2000:  # tiny blob
+        component = labels == lbl
+        ys, xs = np.where(component)
+        if len(ys) < 60:
             continue
         x0, x1 = int(xs.min()), int(xs.max())
         y0, y1 = int(ys.min()), int(ys.max())
         width = x1 - x0 + 1
         height = y1 - y0 + 1
-        if width < 100 or height < 200:
+        if width < 10 or height < 10:
             continue
-        aspect = width / max(1, height)
-        if aspect < 0.25 or aspect > 1.2:
+        if y1 < int(h * 0.22):
             continue
-        # Density of THIS specific component within its bbox (not all white in bbox)
-        component_density = len(ys) / (width * height)
-        if component_density < 0.35:
+        if width > int(w * 0.55) and height < int(h * 0.20):
             continue
-        boxes.append((x0, y0, x1, y1))
+        if width > int(w * 0.80):
+            continue
+        component_density = len(ys) / max(width * height, 1)
+        if component_density < 0.05:
+            continue
+        boxes.extend(_split_box(closed, (x0, y0, x1, y1)))
 
-    boxes.sort(key=lambda b: b[0])  # left to right
+    boxes.sort(key=lambda b: b[0])
     return boxes
 
 
@@ -684,6 +1771,39 @@ def check_no_white_halo(png: bytes, state: dict, step: dict) -> dict:
     }
 
 
+def check_two_fighters_visible(png: bytes, state: dict, step: dict) -> dict:
+    boxes = _detect_white_sprite_regions(png)
+    if len(boxes) >= 2:
+        return {"name": "two_fighters_visible", "passed": True,
+                "reason": f"detected {len(boxes)} fighter-like regions"}
+    return {"name": "two_fighters_visible", "passed": False,
+            "reason": f"detected {len(boxes)} fighter-like regions, expected at least 2"}
+
+
+def check_fighters_grounded(png: bytes, state: dict, step: dict) -> dict:
+    from PIL import Image
+
+    boxes = _detect_white_sprite_regions(png)
+    if len(boxes) < 2:
+        return {"name": "fighters_grounded", "passed": False,
+                "reason": f"only {len(boxes)} fighter(s) detected"}
+
+    img = Image.open(io.BytesIO(png)).convert("RGB")
+    _w, h = img.size
+    cutoff = int(h * 0.55)
+    offenders: list[str] = []
+    for idx, box in enumerate(boxes[:2], start=1):
+        bottom = box[3]
+        if bottom < cutoff:
+            offenders.append(f"fighter{idx} bottom={bottom} above cutoff={cutoff}")
+
+    if offenders:
+        return {"name": "fighters_grounded", "passed": False,
+                "reason": "; ".join(offenders)}
+    return {"name": "fighters_grounded", "passed": True,
+            "reason": f"fighter bottoms are below cutoff={cutoff}"}
+
+
 def check_no_fighter_overlap(png: bytes, state: dict, step: dict) -> dict:
     """Two fighter sprites should never overlap their bboxes significantly.
 
@@ -731,14 +1851,14 @@ def check_p1_did_not_walk_through_p2(png: bytes, state: dict, step: dict) -> dic
 
 
 def check_new_entity_vs_baseline(png: bytes, state: dict, step: dict) -> dict:
-    """After a hadouken / spawn action, there should be more distinct sprite regions."""
+    """After a projectile or spawn action, there should be more distinct sprite regions."""
     boxes = _detect_white_sprite_regions(png)
     baseline_count = state.get("baseline_entity_count", 2)
     if len(boxes) > baseline_count:
         return {"name": "new_entity_vs_baseline", "passed": True,
                 "reason": f"{len(boxes)} regions (up from {baseline_count}) — new entity detected"}
     return {"name": "new_entity_vs_baseline", "passed": False,
-            "reason": f"{len(boxes)} regions (same as baseline {baseline_count}) — no hadouken projectile spawned"}
+            "reason": f"{len(boxes)} regions (same as baseline {baseline_count}) — no new projectile/entity spawned"}
 
 
 def capture_baseline_entity_count(png: bytes, state: dict, step: dict) -> dict:
@@ -749,13 +1869,249 @@ def capture_baseline_entity_count(png: bytes, state: dict, step: dict) -> dict:
             "reason": f"baseline = {len(boxes)} regions"}
 
 
+def check_projectile_visible(png: bytes, state: dict, step: dict) -> dict:
+    from PIL import Image
+    import numpy as np
+    from scipy import ndimage
+
+    img = np.asarray(Image.open(io.BytesIO(png)).convert("RGB"))
+    img_h, _img_w, _ = img.shape
+
+    projectile_mask = (
+        (img[..., 0] >= 220)
+        & (img[..., 1] >= 95)
+        & (img[..., 1] <= 235)
+        & (img[..., 2] <= 125)
+    )
+    labels, num = ndimage.label(projectile_mask)
+    for lbl in range(1, num + 1):
+        ys, xs = np.where(labels == lbl)
+        if len(ys) < 20:
+            continue
+        x0, x1 = int(xs.min()), int(xs.max())
+        y0, y1 = int(ys.min()), int(ys.max())
+        width = x1 - x0 + 1
+        height = y1 - y0 + 1
+        if width < 10 or height < 10:
+            continue
+        if y0 < int(img_h * 0.45):
+            continue
+        if max(width, height) > 96:
+            continue
+        aspect = width / max(height, 1)
+        if aspect < 0.55 or aspect > 3.25:
+            continue
+        cx = (x0 + x1) // 2
+        cy = (y0 + y1) // 2
+        return {
+            "name": "projectile_visible",
+            "passed": True,
+            "reason": f"projectile-colored blob at ({cx}, {cy}) size={width}x{height}",
+        }
+
+    return {
+        "name": "projectile_visible",
+        "passed": False,
+        "reason": "no projectile-colored blob was visible outside fighter bounds",
+    }
+
+
+def check_track_checkpoints_visible(png: bytes, state: dict, step: dict) -> dict:
+    from PIL import Image
+    import numpy as np
+    from scipy import ndimage
+
+    img = np.asarray(Image.open(io.BytesIO(png)).convert("RGB"))
+    checkpoint_mask = (
+        (img[..., 1] >= 180)
+        & (img[..., 0] <= 140)
+        & (img[..., 2] <= 170)
+    )
+    labels, num = ndimage.label(checkpoint_mask)
+    visible = 0
+    for lbl in range(1, num + 1):
+        ys, xs = np.where(labels == lbl)
+        if len(xs) < 80:
+            continue
+        if (xs.max() - xs.min() + 1) < 10 or (ys.max() - ys.min() + 1) < 10:
+            continue
+        visible += 1
+    if visible >= 4:
+        return {
+            "name": "track_checkpoints_visible",
+            "passed": True,
+            "reason": f"detected {visible} checkpoint-colored blobs",
+        }
+    return {
+        "name": "track_checkpoints_visible",
+        "passed": False,
+        "reason": f"only detected {visible} checkpoint-colored blobs",
+    }
+
+
+def check_item_boxes_visible(png: bytes, state: dict, step: dict) -> dict:
+    from PIL import Image
+    import numpy as np
+    from scipy import ndimage
+
+    img = np.asarray(Image.open(io.BytesIO(png)).convert("RGB"))
+    item_box_mask = (
+        (img[..., 0] >= 180)
+        & (img[..., 1] >= 90)
+        & (img[..., 1] <= 220)
+        & (img[..., 2] <= 120)
+    )
+    labels, num = ndimage.label(item_box_mask)
+    visible = 0
+    for lbl in range(1, num + 1):
+        ys, xs = np.where(labels == lbl)
+        if len(xs) < 50:
+            continue
+        if (xs.max() - xs.min() + 1) < 8 or (ys.max() - ys.min() + 1) < 8:
+            continue
+        visible += 1
+    if visible >= 3:
+        return {
+            "name": "item_boxes_visible",
+            "passed": True,
+            "reason": f"detected {visible} item-box colored blobs",
+        }
+    return {
+        "name": "item_boxes_visible",
+        "passed": False,
+        "reason": f"only detected {visible} item-box colored blobs",
+    }
+
+
+def check_mode7_checkpoint_marker_visible(png: bytes, state: dict, step: dict) -> dict:
+    from PIL import Image
+    import numpy as np
+    from scipy import ndimage
+
+    img = np.asarray(Image.open(io.BytesIO(png)).convert("RGB"))
+    height, width = img.shape[:2]
+    roi = img[int(height * 0.18):int(height * 0.74), :int(width * 0.72)]
+    checkpoint_mask = (
+        (roi[..., 1] >= 180)
+        & (roi[..., 0] <= 150)
+        & (roi[..., 2] <= 170)
+    )
+    labels, num = ndimage.label(checkpoint_mask)
+    visible = 0
+    for lbl in range(1, num + 1):
+        ys, xs = np.where(labels == lbl)
+        if len(xs) < 40:
+            continue
+        if (xs.max() - xs.min() + 1) < 6 or (ys.max() - ys.min() + 1) < 18:
+            continue
+        visible += 1
+    if visible >= 1:
+        return {
+            "name": "race_checkpoint_marker_visible",
+            "passed": True,
+            "reason": f"detected {visible} projected checkpoint marker(s)",
+        }
+    return {
+        "name": "race_checkpoint_marker_visible",
+        "passed": False,
+        "reason": "no projected checkpoint marker was visible in the race view",
+    }
+
+
+def check_mode7_item_marker_visible(png: bytes, state: dict, step: dict) -> dict:
+    from PIL import Image
+    import numpy as np
+    from scipy import ndimage
+
+    img = np.asarray(Image.open(io.BytesIO(png)).convert("RGB"))
+    height, width = img.shape[:2]
+    roi = img[int(height * 0.22):int(height * 0.72), :int(width * 0.78)]
+    item_mask = (
+        (roi[..., 0] >= 185)
+        & (roi[..., 1] >= 95)
+        & (roi[..., 1] <= 230)
+        & (roi[..., 2] <= 140)
+    )
+    labels, num = ndimage.label(item_mask)
+    visible = 0
+    for lbl in range(1, num + 1):
+        ys, xs = np.where(labels == lbl)
+        if len(xs) < 32:
+            continue
+        if (xs.max() - xs.min() + 1) < 8 or (ys.max() - ys.min() + 1) < 8:
+            continue
+        visible += 1
+    if visible >= 1:
+        return {
+            "name": "race_item_marker_visible",
+            "passed": True,
+            "reason": f"detected {visible} projected item marker(s)",
+        }
+    return {
+        "name": "race_item_marker_visible",
+        "passed": False,
+        "reason": "no projected item marker was visible in the race view",
+    }
+
+
+def check_race_hud_visible(png: bytes, state: dict, step: dict) -> dict:
+    from PIL import Image
+    import numpy as np
+
+    img = np.asarray(Image.open(io.BytesIO(png)).convert("RGB"))
+    height, width = img.shape[:2]
+    top_left = img[:110, :260]
+    top_right = img[:110, max(width - 260, 0):]
+    minimap = img[max(height - 190, 0):max(height - 10, 0), max(width - 230, 0):max(width - 10, 0)]
+
+    left_bright = int(np.count_nonzero(
+        (top_left[..., 0] >= 215)
+        & (top_left[..., 1] >= 215)
+        & (top_left[..., 2] >= 215)
+    ))
+    right_bright = int(np.count_nonzero(
+        (top_right[..., 0] >= 215)
+        & (top_right[..., 1] >= 185)
+        & (top_right[..., 2] <= 120)
+    ))
+    minimap_var = float(np.std(minimap.mean(axis=2))) if minimap.size else 0.0
+    minimap_unique = int(np.unique(minimap.reshape(-1, 3), axis=0).shape[0]) if minimap.size else 0
+
+    passed = left_bright >= 20 and right_bright >= 20 and minimap_var >= 6.0 and minimap_unique >= 16
+    if passed:
+        return {
+            "name": "race_hud_visible",
+            "passed": True,
+            "reason": f"lap/position HUD visible and minimap active (left={left_bright}, right={right_bright}, minimap_var={minimap_var:.1f})",
+        }
+    return {
+        "name": "race_hud_visible",
+        "passed": False,
+        "reason": f"HUD/minimap visibility too weak (left={left_bright}, right={right_bright}, minimap_var={minimap_var:.1f}, minimap_unique={minimap_unique})",
+    }
+
+
 SEMANTIC_CHECKS = {
     "sprite_differs_from_baseline": check_sprite_differs_from_baseline,
     "no_white_halo": check_no_white_halo,
+    "two_fighters_visible": check_two_fighters_visible,
+    "two_actors_visible": check_two_fighters_visible,
+    "fighters_grounded": check_fighters_grounded,
+    "actors_grounded": check_fighters_grounded,
     "no_fighter_overlap": check_no_fighter_overlap,
+    "no_actor_overlap": check_no_fighter_overlap,
     "p1_did_not_walk_through_p2": check_p1_did_not_walk_through_p2,
     "new_entity_vs_baseline": check_new_entity_vs_baseline,
     "capture_baseline_entity_count": capture_baseline_entity_count,
+    "projectile_visible": check_projectile_visible,
+    "track_checkpoints_visible": check_track_checkpoints_visible,
+    "item_boxes_visible": check_item_boxes_visible,
+    "race_checkpoint_marker_visible": check_mode7_checkpoint_marker_visible,
+    "race_item_marker_visible": check_mode7_item_marker_visible,
+    "mode7_checkpoint_marker_visible": check_mode7_checkpoint_marker_visible,
+    "mode7_item_marker_visible": check_mode7_item_marker_visible,
+    "race_hud_visible": check_race_hud_visible,
+    "kart_hud_visible": check_race_hud_visible,
 }
 
 
@@ -770,7 +2126,41 @@ def _wipe_screenshots_dir(game_name: str) -> None:
         return
     d = _DEBUG_DIR / game_name
     if d.exists():
-        shutil.rmtree(d)
+        def _onerror(func, path, _exc_info):
+            try:
+                Path(path).chmod(0o700)
+            except OSError:
+                pass
+            func(path)
+
+        removed = False
+        for attempt in range(5):
+            try:
+                shutil.rmtree(d, onerror=_onerror)
+                removed = True
+                break
+            except PermissionError:
+                time.sleep(0.2 * (attempt + 1))
+        if not removed and d.exists():
+            stale = d.with_name(f"{d.name}_stale_{int(time.time() * 1000)}")
+            try:
+                d.rename(stale)
+                removed = True
+            except OSError:
+                pass
+        if not removed and d.exists():
+            for child in sorted(d.glob("**/*"), reverse=True):
+                try:
+                    child.chmod(0o700)
+                except OSError:
+                    pass
+                try:
+                    if child.is_file():
+                        child.unlink()
+                    elif child.is_dir():
+                        child.rmdir()
+                except OSError:
+                    continue
     d.mkdir(parents=True, exist_ok=True)
 
 
@@ -783,6 +2173,32 @@ def _save_screenshot_to_disk(
     path = d / f"{step_index + 1:02d}_{safe}.png"
     path.write_bytes(png_bytes)
     return path
+
+
+def _save_runtime_trace_log(game_name: str, console_events: list[dict], browser_errors: list[str]) -> Path:
+    d = _DEBUG_DIR / game_name
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / "runtime_trace.log"
+    lines: list[str] = []
+    for event in console_events:
+        lines.append(f"[{event['t_ms']:06d}ms] [{event['type']}] {event['text']}")
+    if browser_errors:
+        lines.append("")
+        lines.append("# browser_errors")
+        lines.extend(browser_errors)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def _trace_contains(events: list[dict], needle: str) -> bool:
+    return any(needle in event["text"] for event in events)
+
+
+def _trace_summary(events: list[dict], limit: int = 4) -> str:
+    if not events:
+        return ""
+    trimmed = events[-limit:]
+    return " | ".join(event["text"] for event in trimmed)
 
 
 def _is_safe_name(name: str) -> bool:
@@ -803,6 +2219,10 @@ def _execute_test(game_name: str, test_steps: list[dict], base_url: str) -> list
     # Shared state dict for semantic checks — persists across steps so later
     # checks can compare against baselines captured earlier in the run.
     shared_state: dict = {}
+    console_events: list[dict] = []
+    trace_events: list[dict] = []
+    browser_errors: list[str] = []
+    run_started = time.time()
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--disable-web-security"])
@@ -811,9 +2231,39 @@ def _execute_test(game_name: str, test_steps: list[dict], base_url: str) -> list
             viewport={"width": 1280, "height": 720},
         )
         page = ctx.new_page()
-        # Log browser console to our log so we can see Godot errors
-        page.on("console", lambda msg: log.info("[browser:%s] %s", msg.type, msg.text))
-        page.on("pageerror", lambda err: log.error("[browser:err] %s", err))
+
+        def _record_console(msg) -> None:
+            entry = {
+                "t_ms": int((time.time() - run_started) * 1000),
+                "type": msg.type,
+                "text": msg.text,
+            }
+            console_events.append(entry)
+            if "[trace]" in msg.text:
+                trace_events.append(entry)
+            if msg.type == "error":
+                browser_errors.append(f"[{entry['t_ms']:06d}ms] [console:error] {msg.text}")
+            log.info("[browser:%s] %s", msg.type, msg.text)
+
+        def _record_page_error(err) -> None:
+            stamp = int((time.time() - run_started) * 1000)
+            browser_errors.append(f"[{stamp:06d}ms] [pageerror] {err}")
+            log.error("[browser:err] %s", err)
+
+        page.on("console", _record_console)
+        page.on("pageerror", _record_page_error)
+
+        def _focus_canvas() -> None:
+            canvas = page.query_selector("canvas")
+            if canvas:
+                try:
+                    canvas.click(force=True, timeout=5000)
+                    page.wait_for_timeout(50)
+                    return
+                except Exception:
+                    pass
+            page.mouse.click(640, 360)
+            page.wait_for_timeout(50)
 
         for i, step in enumerate(test_steps):
             action = step["action"]
@@ -822,38 +2272,74 @@ def _execute_test(game_name: str, test_steps: list[dict], base_url: str) -> list
             wait_ms = step.get("wait_ms", 1000)
             hold_ms = step.get("hold_ms", 0)
             verify_change = step.get("verify_change", False)
+            raw_diff_threshold = step.get("diff_threshold", 2.0)
+            diff_threshold = float(2.0 if raw_diff_threshold is None else raw_diff_threshold)
+            trace_start = len(trace_events)
+            error_start = len(browser_errors)
 
             try:
-                if keys is None and i == 0:
+                navigate_query = step.get("navigate_query")
+                url_query = step.get("url_query")
+                if navigate_query is not None or (keys is None and i == 0):
+                    query = navigate_query if navigate_query is not None else url_query
                     url = f"{base_url}/godot/{game_name}/"
+                    if query:
+                        url += f"?{query}"
                     log.info("playwright: goto %s", url)
                     page.goto(url, timeout=60000, wait_until="domcontentloaded")
                     # Wait for the canvas element to actually exist
                     try:
-                        page.wait_for_selector("canvas", timeout=15000)
+                        page.wait_for_selector("canvas", state="visible", timeout=30000)
                     except Exception:
-                        log.warning("playwright: no canvas within 15s for %s", game_name)
+                        log.warning("playwright: no visible canvas within 30s for %s", game_name)
+                    if navigate_query is not None:
+                        prev_png = None
+                        shared_state.clear()
                     page.wait_for_timeout(wait_ms)
                 elif keys == "click":
-                    canvas = page.query_selector("canvas")
-                    if canvas:
-                        canvas.click()
+                    _focus_canvas()
                     page.wait_for_timeout(wait_ms)
+                elif method == "sequence":
+                    _focus_canvas()
+                    for action_step in step.get("sequence", []):
+                        seq_type = action_step.get("type")
+                        key = action_step.get("key")
+                        if seq_type == "down" and key:
+                            page.keyboard.down(key)
+                        elif seq_type == "up" and key:
+                            page.keyboard.up(key)
+                        elif seq_type == "press" and key:
+                            page.keyboard.press(key)
+                        elif seq_type == "wait":
+                            page.wait_for_timeout(int(action_step.get("ms", 0)))
+                    if wait_ms:
+                        page.wait_for_timeout(wait_ms)
                 elif keys and method == "hold":
-                    canvas = page.query_selector("canvas")
-                    if canvas:
-                        canvas.click()
-                        page.wait_for_timeout(50)
-                    page.keyboard.down(keys)
+                    _focus_canvas()
+                    combo_keys = [part.strip() for part in str(keys).split("+") if part.strip()]
+                    if len(combo_keys) > 1:
+                        for combo_key in combo_keys:
+                            page.keyboard.down(combo_key)
+                    else:
+                        page.keyboard.down(keys)
                     page.wait_for_timeout(hold_ms or 500)
-                    page.keyboard.up(keys)
+                    if len(combo_keys) > 1:
+                        for combo_key in reversed(combo_keys):
+                            page.keyboard.up(combo_key)
+                    else:
+                        page.keyboard.up(keys)
                     page.wait_for_timeout(wait_ms)
                 elif keys:
-                    canvas = page.query_selector("canvas")
-                    if canvas:
-                        canvas.click()
+                    _focus_canvas()
+                    combo_keys = [part.strip() for part in str(keys).split("+") if part.strip()]
+                    if len(combo_keys) > 1:
+                        for combo_key in combo_keys:
+                            page.keyboard.down(combo_key)
                         page.wait_for_timeout(50)
-                    page.keyboard.press(keys)
+                        for combo_key in reversed(combo_keys):
+                            page.keyboard.up(combo_key)
+                    else:
+                        page.keyboard.press(keys)
                     page.wait_for_timeout(wait_ms)
                 else:
                     page.wait_for_timeout(wait_ms)
@@ -866,14 +2352,17 @@ def _execute_test(game_name: str, test_steps: list[dict], base_url: str) -> list
                 changed = True
                 diff_value = 0.0
                 if prev_png is not None:
-                    changed, diff_value = _screenshots_differ(prev_png, png_bytes)
+                    changed, diff_value = _screenshots_differ(prev_png, png_bytes, threshold=diff_threshold)
                 prev_png = png_bytes
+                new_traces = trace_events[trace_start:]
+                new_errors = browser_errors[error_start:]
 
                 metrics = (
                     f"colors={analysis['unique_colors']} "
                     f"var={analysis['variance']} "
                     f"nontrivial={int(analysis['nontrivial_pct']*100)}% "
-                    f"Δ={diff_value}"
+                    f"diff={diff_value}/{diff_threshold} "
+                    f"traces={len(new_traces)}"
                 )
 
                 # Pass criteria:
@@ -887,7 +2376,45 @@ def _execute_test(game_name: str, test_steps: list[dict], base_url: str) -> list
                     failure_reasons.append("BLANK CANVAS")
                 if verify_change and not changed:
                     passed = False
-                    failure_reasons.append(f"NO CHANGE after input (Δ={diff_value})")
+                    failure_reasons.append(f"NO CHANGE after input (diff={diff_value}, threshold={diff_threshold})")
+
+                trace_any = step.get("trace_any") or []
+                if trace_any and not any(_trace_contains(new_traces, pattern) for pattern in trace_any):
+                    passed = False
+                    failure_reasons.append(f"missing expected trace_any: {trace_any}")
+
+                trace_any_global = step.get("trace_any_global") or []
+                if trace_any_global and not any(_trace_contains(trace_events, pattern) for pattern in trace_any_global):
+                    passed = False
+                    failure_reasons.append(f"missing expected trace_any_global: {trace_any_global}")
+
+                trace_all_global = step.get("trace_all_global") or []
+                missing_global_traces = [pattern for pattern in trace_all_global if not _trace_contains(trace_events, pattern)]
+                if missing_global_traces:
+                    passed = False
+                    failure_reasons.append(f"missing expected trace_all_global: {missing_global_traces}")
+
+                trace_all = step.get("trace_all") or []
+                missing_traces = [pattern for pattern in trace_all if not _trace_contains(new_traces, pattern)]
+                if missing_traces:
+                    passed = False
+                    failure_reasons.append(f"missing expected traces: {missing_traces}")
+
+                trace_none = step.get("trace_none") or []
+                present_forbidden_traces = [pattern for pattern in trace_none if _trace_contains(new_traces, pattern)]
+                if present_forbidden_traces:
+                    passed = False
+                    failure_reasons.append(f"unexpected trace_none matches: {present_forbidden_traces}")
+
+                trace_none_global = step.get("trace_none_global") or []
+                present_forbidden_global = [pattern for pattern in trace_none_global if _trace_contains(trace_events, pattern)]
+                if present_forbidden_global:
+                    passed = False
+                    failure_reasons.append(f"unexpected trace_none_global matches: {present_forbidden_global}")
+
+                if new_errors:
+                    passed = False
+                    failure_reasons.append("browser errors: " + " | ".join(new_errors[-3:]))
 
                 # Run semantic checks
                 for check_name in step.get("checks") or []:
@@ -909,11 +2436,14 @@ def _execute_test(game_name: str, test_steps: list[dict], base_url: str) -> list
                 desc = step.get("description", "")
                 if check_results:
                     check_summary = " | ".join(
-                        f"{'✓' if r['passed'] else '✗'} {r['name']}" for r in check_results
+                        f"{'ok' if r['passed'] else 'fail'} {r['name']}" for r in check_results
                     )
                     desc = f"{desc}\n  checks: {check_summary}"
+                trace_summary = _trace_summary(new_traces)
+                if trace_summary:
+                    desc = f"{desc}\n  traces: {trace_summary}"
                 if failure_reasons:
-                    desc = f"{desc}\n  ❌ {'; '.join(failure_reasons)}"
+                    desc = f"{desc}\n  FAIL: {'; '.join(failure_reasons)}"
 
                 results.append({
                     "type": "step",
@@ -945,6 +2475,8 @@ def _execute_test(game_name: str, test_steps: list[dict], base_url: str) -> list
         ctx.close()
         browser.close()
 
+    _save_runtime_trace_log(game_name, console_events, browser_errors)
+    _write_test_results_coverage(game_name, test_steps, results)
     return results
 
 

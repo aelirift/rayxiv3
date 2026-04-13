@@ -3,7 +3,7 @@
 Given an impact_map slice for one system + any relevant mechanic_spec, asks the
 LLM to emit a complete Godot 4.4 GDScript that implements the system:
   - extends Node
-  - var fighters: Array + setup(fighter_list) convention
+  - entity-pool setup via setup(pools, cfg)
   - process(delta) body that honors the read/write edges
   - rich trace logging so playwright tests can verify behavior via console output
 
@@ -20,7 +20,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -117,28 +119,27 @@ every system that reads and writes each property — use that to know which \
 siblings to call.
 5. **NEVER INVENT NEW PROPERTIES.** You may only read/write properties that appear \
 in the slice's `owned_properties` list or under `own_writes.target` / `own_reads.source` / \
-`peer_writes` / `downstream_reads`. If you need to distinguish two fighters, use their \
-INDEX in `entity_pools["fighters"]` (0 and 1), or use existing properties like `is_cpu` \
-— do NOT invent `player_slot`, `fighter_id`, `slot_number`, or any other property that \
+`peer_writes` / `downstream_reads`. If you need to distinguish two actors, use their \
+index in the appropriate entity pool, or use existing properties like `is_cpu` / \
+`is_ai_controlled` when present — do NOT invent `player_slot`, `fighter_id`, `slot_number`, or any other property that \
 isn't in the slice. Every invented property becomes a runtime `Invalid access` error \
 because the impact map is the authoritative schema.
 
 **Cross-system handoffs** MUST use properties declared in the impact map, never \
-invented intermediate state. Canonical fighter-game handoffs:
+invented intermediate state. Common req-owned handoff patterns:
 
-- **input → movement**: input_system writes `fighter.current_action` (values like \
-  "walk_left", "walk_right", "jump", "crouch", "idle", "light_punch", etc.). \
-  movement_system reads `fighter.current_action` and applies velocity based on the \
-  action string. NEVER invent `fighter.input_horizontal`, `fighter.input_jump`, \
-  `fighter.input_crouch` — those are LLM-drift and the game will not move.
-- **combat → health**: combat_system writes `fighter.current_health` and \
-  `fighter.hit_this_frame`. health_system reads them to detect KO.
-- **collision → combat**: collision_system writes `fighter.hit_this_frame` and \
-  `fighter.active_hitbox`. combat_system reads them to fire damage events.
+- **input → motion/animation**: the input system writes a canonical action/state property \
+  like `actor.current_action`; downstream systems read that exact property to decide motion, \
+  animation, and timing. NEVER invent shadow inputs like `actor.input_horizontal`, \
+  `actor.input_jump`, or `actor.input_drift` unless those properties are explicitly in the slice.
+- **collision → resolution**: collision systems write canonical overlap/hit/contact state; \
+  resolution systems consume those canonical properties to apply damage, pickups, spin-outs, \
+  or other outcomes.
+- **resource/status → HUD**: HUD-facing state must already exist as req-owned properties. \
+  Never derive HUD-only state from hidden invented fields.
 
 If the property you need is not in the slice, the answer is "use a different property \
-that IS in the slice" — not "invent a new one". When in doubt, read `fighter.current_action` \
-(it's on nearly every fighter slice).
+that IS in the slice" — not "invent a new one".
 6. **GDScript type conversion.** Use `x as int` / `x as float` / `x as String` for \
 casts, NOT `int(x)` / `float(x)` — Godot 4 does not have Python-style int() \
 constructors on Variant. If you need an int from a dict with a default, use \
@@ -210,7 +211,7 @@ print("[trace] round.transition from=fighting to=round_over" )
 ```
 
 ALWAYS log when something observable happens. Be specific enough that a test \
-runner can assert "a hadouken was spawned by p1 facing right with medium power".
+runner can assert the exact mechanic outcome that occurred.
 
 ## Rules
 
@@ -237,6 +238,9 @@ def _cache_key(
     constants: dict | None = None,
     pool_names: list[str] | None = None,
     system_description: str | None = None,
+    role_defs: dict | None = None,
+    role_groups: dict[str, list[str]] | None = None,
+    capabilities: dict[str, bool] | None = None,
 ) -> str:
     payload = json.dumps(
         {
@@ -246,6 +250,9 @@ def _cache_key(
             "const": constants or {},
             "pools": sorted(pool_names or []),
             "desc": system_description or "",
+            "roles": role_defs or {},
+            "role_groups": role_groups or {},
+            "capabilities": capabilities or {},
         },
         sort_keys=True,
         default=str,
@@ -282,12 +289,22 @@ def _strip_markdown_fences(text: str) -> str:
 
 def _godot_check_script(gd_source: str) -> tuple[bool, str]:
     """Run `godot --headless --check-only` on the GDScript. Returns (ok, error)."""
+    godot_bin = (
+        os.environ.get("GODOT_BIN")
+        or shutil.which("godot")
+        or shutil.which("godot4")
+        or shutil.which("godot.exe")
+        or shutil.which("godot4.exe")
+    )
+    if not godot_bin:
+        _log.warning("godot binary not found; skipping syntax check")
+        return True, ""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_script = Path(tmpdir) / "check.gd"
         tmp_script.write_text(gd_source, encoding="utf-8")
         try:
             result = subprocess.run(
-                ["godot", "--headless", "--check-only", "--script", str(tmp_script)],
+                [godot_bin, "--headless", "--check-only", "--script", str(tmp_script)],
                 capture_output=True, text=True, timeout=20,
             )
             if result.returncode == 0:
@@ -298,9 +315,6 @@ def _godot_check_script(gd_source: str) -> tuple[bool, str]:
             lines = [ln for ln in err.splitlines()
                      if "ERROR" in ln or "error" in ln.lower() or "at:" in ln]
             return False, "\n".join(lines[-20:]) or err[-2000:]
-        except FileNotFoundError:
-            _log.warning("godot binary not found; skipping syntax check")
-            return True, ""
         except subprocess.TimeoutExpired:
             return False, "godot --check-only timed out"
 
@@ -400,6 +414,96 @@ def _extract_enum_domains(slice_data: dict) -> dict[str, set[str]]:
     return out
 
 
+def _enum_aliases(prop: str) -> set[str]:
+    aliases = {prop}
+    parts = [part for part in prop.split("_") if part]
+    if len(parts) >= 2 and parts[0] in {"current", "ai", "is"}:
+        aliases.add("_".join(parts[1:]))
+    if len(parts) >= 3 and parts[0] == "ai" and parts[1] == "current":
+        aliases.add("_".join(parts[2:]))
+    return {alias for alias in aliases if alias and alias not in {"type", "state", "mode"}}
+
+
+def _normalize_enum_unset_literals(gd_source: str, slice_data: dict) -> str:
+    normalized = gd_source
+    sentinel_names = {"none", "idle", "off", "inactive", "unset", "default"}
+    for pid, allowed in _extract_enum_domains(slice_data).items():
+        if "." not in pid:
+            continue
+        _owner, prop = pid.split(".", 1)
+        sentinel = next((value for value in allowed if value.lower() in sentinel_names), None)
+        if sentinel is None:
+            continue
+        aliases = _enum_aliases(prop)
+        patterns = [
+            rf'(\b\w+\.{re.escape(prop)}\s*==\s*)""',
+            rf'(\b\w+\.{re.escape(prop)}\s*!=\s*)""',
+            rf'(\b\w+\.{re.escape(prop)}\s*=\s*)""',
+            rf'(\b\w+\["{re.escape(prop)}"\]\s*==\s*)""',
+            rf'(\b\w+\["{re.escape(prop)}"\]\s*!=\s*)""',
+            rf'(\b\w+\["{re.escape(prop)}"\]\s*=\s*)""',
+        ]
+        for pattern in patterns:
+            normalized = re.sub(pattern, rf'\1"{sentinel}"', normalized)
+        for alias in aliases:
+            alias_patterns = [
+                rf'(\b{re.escape(alias)}\s*==\s*)""',
+                rf'(\b{re.escape(alias)}\s*!=\s*)""',
+                rf'(\b{re.escape(alias)}\s*=\s*)""',
+            ]
+            for pattern in alias_patterns:
+                normalized = re.sub(pattern, rf'\1"{sentinel}"', normalized)
+            func_re = re.compile(
+                rf'(func\s+[A-Za-z0-9_]*{re.escape(alias)}[A-Za-z0-9_]*[^\n]*->\s*String:\n)(.*?)(?=\nfunc |\Z)',
+                re.DOTALL,
+            )
+
+            def _replace_func_returns(match, sentinel=sentinel):
+                header = match.group(1)
+                body = match.group(2)
+                body = re.sub(r'(\breturn\s*)""', rf'\1"{sentinel}"', body)
+                return header + body
+
+            normalized = func_re.sub(_replace_func_returns, normalized)
+    return normalized
+
+
+def _normalize_entity_get_defaults(gd_source: str) -> str:
+    normalized = re.sub(
+        r'\b(\w+)\.get\("([^"]+)",\s*([^)]+)\)',
+        r'_entity_prop(\1, "\2", \3)',
+        gd_source,
+    )
+    if normalized == gd_source or "func _entity_prop(" in normalized:
+        return normalized
+    helper = """
+func _entity_prop(obj, name: String, fallback):
+    if obj == null:
+        return fallback
+    var value = obj.get(name)
+    return fallback if value == null else value
+""".strip()
+    insert_at = normalized.find("\nfunc setup(")
+    if insert_at < 0:
+        return normalized.rstrip() + "\n\n" + helper + "\n"
+    return normalized[: insert_at + 1] + helper + "\n\n" + normalized[insert_at + 1 :]
+
+
+def _normalize_js_ternary(gd_source: str) -> str:
+    normalized = gd_source
+    line_patterns = [
+        re.compile(r'(^\s*return\s+)([^?\n]+?)\s*\?\s*([^:\n]+?)\s*:\s*([^\n]+)$', re.MULTILINE),
+        re.compile(r'(^\s*var\s+\w+(?::\s*[^=]+)?\s*=\s*)([^?\n]+?)\s*\?\s*([^:\n]+?)\s*:\s*([^\n]+)$', re.MULTILINE),
+        re.compile(r'(^\s*\w+\s*=\s*)([^?\n]+?)\s*\?\s*([^:\n]+?)\s*:\s*([^\n]+)$', re.MULTILINE),
+    ]
+    for pattern in line_patterns:
+        normalized = pattern.sub(
+            lambda m: f"{m.group(1)}{m.group(3).strip()} if {m.group(2).strip()} else {m.group(4).strip()}",
+            normalized,
+        )
+    return normalized
+
+
 def _entity_variable_names(gd_source: str, pool_names: list[str] | None) -> set[str]:
     """Collect local var / param names that clearly bind to entities so the
     property validator doesn't flag `config.max_health` or `systems.foo`.
@@ -407,17 +511,21 @@ def _entity_variable_names(gd_source: str, pool_names: list[str] | None) -> set[
     Heuristic: look at `for <name> in entity_pools["fighters"]` patterns and
     `<name>:` type annotations referencing CharacterBody2D/Node2D/etc.
     """
-    names: set[str] = {"fighter", "attacker", "defender", "opponent", "projectile",
-                       "p1", "p2", "f", "fighter1", "fighter2"}
+    names: set[str] = {
+        "fighter", "attacker", "defender", "opponent", "projectile",
+        "p1", "p2", "f", "fighter1", "fighter2", "proj", "candidate",
+    }
     for m in re.finditer(r'for\s+(\w+)\s+in\s+entity_pools\[', gd_source):
         names.add(m.group(1))
-    for m in re.finditer(r'for\s+(\w+)\s+in\s+fighters', gd_source):
+    for m in re.finditer(r'for\s+(\w+)\s+in\s+\w+', gd_source):
+        names.add(m.group(1))
+    for m in re.finditer(r'var\s+(\w+)\s*=\s*\w+\.new\(\)', gd_source):
         names.add(m.group(1))
     return names
 
 
-def _strip_comments_and_strings(gd_source: str) -> tuple[str, list[str]]:
-    """Return (code_without_comments_or_strings, extracted_string_literals).
+def _strip_comments_and_strings(gd_source: str) -> tuple[str, str, list[str]]:
+    """Return (code_without_comments, code_without_comments_or_strings, extracted_string_literals).
 
     Used so property-access scanning doesn't trip on identifiers inside
     string literals or comments, while enum-domain scanning has the full
@@ -440,7 +548,7 @@ def _strip_comments_and_strings(gd_source: str) -> tuple[str, list[str]]:
     strings = re.findall(r'"((?:\\"|[^"])*)"', body)
     # Mask them out so subsequent scans don't match identifiers inside.
     masked = re.sub(r'"(?:\\"|[^"])*"', '""', body)
-    return masked, strings
+    return body, masked, strings
 
 
 def _validate_property_access(
@@ -462,7 +570,7 @@ def _validate_property_access(
     authorized = _extract_slice_properties(slice_data) | _NATIVE_MEMBERS
     enum_domains = _extract_enum_domains(slice_data)
     entity_vars = _entity_variable_names(gd_source, pool_names)
-    masked_body, string_literals = _strip_comments_and_strings(gd_source)
+    body_no_comments, masked_body, string_literals = _strip_comments_and_strings(gd_source)
 
     errors: list[str] = []
 
@@ -528,7 +636,7 @@ def _validate_property_access(
         cmp_re = re.compile(
             rf'\b(\w+)\.{re.escape(prop)}\s*(?:==|!=|=)\s*"([^"]*)"'
         )
-        for m in cmp_re.finditer(masked_body):
+        for m in cmp_re.finditer(body_no_comments):
             var_name, literal = m.group(1), m.group(2)
             if var_name not in entity_vars:
                 continue
@@ -582,6 +690,56 @@ def _validate_contract(gd_source: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _validate_generated_script(
+    gd_source: str,
+    slice_data: dict,
+    pool_names: list[str] | None,
+) -> tuple[bool, str]:
+    ok, err = _godot_check_script(gd_source)
+    if not ok:
+        return False, err
+    contract_ok, contract_err = _validate_contract(gd_source)
+    if not contract_ok:
+        return False, contract_err
+    prop_ok, prop_err = _validate_property_access(gd_source, slice_data, pool_names)
+    if not prop_ok:
+        return False, prop_err
+    return True, ""
+
+
+def _find_compatible_cached_candidate(
+    system: str,
+    slice_data: dict,
+    pool_names: list[str] | None,
+    exclude_key: str | None = None,
+) -> str | None:
+    if not _CACHE_DIR.exists():
+        return None
+    header = f"## {system} "
+    candidates = sorted(
+        _CACHE_DIR.glob("*.gd"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for path in candidates:
+        if exclude_key and path.stem == exclude_key:
+            continue
+        try:
+            gd = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if header not in gd:
+            continue
+        gd = _strip_markdown_fences(gd)
+        gd = _normalize_enum_unset_literals(gd, slice_data)
+        gd = _normalize_entity_get_defaults(gd)
+        gd = _normalize_js_ternary(gd)
+        ok, _err = _validate_generated_script(gd, slice_data, pool_names)
+        if ok:
+            return gd
+    return None
+
+
 async def _generate_system_via_llm(
     system: str,
     slice_data: dict,
@@ -591,20 +749,56 @@ async def _generate_system_via_llm(
     constants: dict | None = None,
     pool_names: list[str] | None = None,
     system_description: str | None = None,
+    role_defs: dict | None = None,
+    role_groups: dict[str, list[str]] | None = None,
+    capabilities: dict[str, bool] | None = None,
     max_retries: int = 3,
 ) -> str:
     """Call the LLM to produce a system .gd file. Validates + retries on errors."""
-    key = _cache_key(system, slice_data, spec, constants, pool_names, system_description)
+    key = _cache_key(
+        system,
+        slice_data,
+        spec,
+        constants,
+        pool_names,
+        system_description,
+        role_defs,
+        role_groups,
+        capabilities,
+    )
     cached = _cache_get(key)
     trace = get_trace()
     caller_name = type(caller).__name__
     label = f"system_gen[{system}]"
     if cached:
+        cached = _strip_markdown_fences(cached)
+        cached = _normalize_enum_unset_literals(cached, slice_data)
+        cached = _normalize_entity_get_defaults(cached)
+        cached = _normalize_js_ternary(cached)
+        cached_ok, cached_err = _validate_generated_script(cached, slice_data, pool_names)
+        if not cached_ok:
+            _log.warning("%s cache invalid, regenerating: %s", label, cached_err[:200])
+            cached = None
+    if cached:
+        cached = _strip_markdown_fences(cached)
+        cached = _normalize_enum_unset_literals(cached, slice_data)
+        cached = _normalize_entity_get_defaults(cached)
+        cached = _normalize_js_ternary(cached)
+        _cache_put(key, cached)
         _log.info("%s — cache hit", label)
         if trace:
             cid = trace.llm_start("codegen", label, caller_name, 0)
             trace.llm_end(cid, output_chars=len(cached), cache_hit=True)
         return cached
+
+    compatible_cached = _find_compatible_cached_candidate(system, slice_data, pool_names, exclude_key=key)
+    if compatible_cached:
+        _cache_put(key, compatible_cached)
+        _log.info("%s â€” compatible cache reuse", label)
+        if trace:
+            cid = trace.llm_start("codegen", label, caller_name, 0)
+            trace.llm_end(cid, output_chars=len(compatible_cached), cache_hit=True)
+        return compatible_cached
 
     hlr_ctx = {
         "game_name": hlr.game_name,
@@ -630,6 +824,39 @@ async def _generate_system_via_llm(
             "Read entities from `entity_pools[<name>]`. These are the pool names "
             "available for THIS system (populated by scene_gen at setup time):\n\n"
             + "\n".join(f"- `{p}`" for p in pool_names)
+        )
+    if role_defs:
+        role_lines: list[str] = []
+        for role_name, role_meta in sorted((role_defs or {}).items()):
+            if hasattr(role_meta, "model_dump"):
+                role_meta = role_meta.model_dump(exclude_none=True)
+            base_node = role_meta.get("godot_base_node", "Node2D")
+            acquisition = role_meta.get("scene_acquisition", {"method": "runtime_array"})
+            if role_name == "fighter":
+                script_hint = "scene characters already use res://scripts/characters/<character>.gd"
+            else:
+                script_hint = f'res://scripts/entities/{role_name}.gd'
+            role_lines.append(
+                f"- `{role_name}`: base `{base_node}`, acquisition `{json.dumps(acquisition, default=str)}`, script `{script_hint}`"
+            )
+        base_prompt_parts.append(
+            "## Canonical runtime roles\n"
+            "These are the req-owned runtime role contracts available to this build. "
+            "If you need to create a runtime entity, instantiate its generated "
+            "role script instead of inventing a bare node shape.\n\n"
+            + "\n".join(role_lines)
+        )
+    if role_groups or capabilities:
+        contract_ctx = {
+            "role_groups": role_groups or {},
+            "capabilities": capabilities or {},
+        }
+        base_prompt_parts.append(
+            "## Compiled req contract hints\n"
+            "These contract-level groups and capability flags are req-owned summaries. "
+            "Use them to stay game-agnostic: choose pools and mechanic behavior from "
+            "roles/capabilities, not from franchise assumptions.\n\n"
+            f"```json\n{json.dumps(contract_ctx, indent=2)}\n```"
         )
 
     # Enum-valued properties get their own call-out so the LLM cannot miss
@@ -677,22 +904,35 @@ async def _generate_system_via_llm(
     base_prompt = "\n\n".join(base_prompt_parts)
 
     last_err: str = ""
+    last_source: str = ""
     for attempt in range(max_retries):
         cid = trace.llm_start("codegen", label, caller_name, len(base_prompt)) if trace else ""
         try:
             prompt = base_prompt
             if last_err:
-                prompt = (
+                prompt_parts = [
                     f"Your previous attempt failed validation with this error:\n\n"
                     f"```\n{last_err}\n```\n\n"
+                ]
+                if last_source:
+                    prompt_parts.append(
+                        "Here is the previous script. Repair it instead of rewriting from scratch.\n\n"
+                        f"```gdscript\n{last_source}\n```\n\n"
+                    )
+                prompt_parts.append(
                     f"Fix the error and emit a corrected, complete script.\n\n{base_prompt}"
                 )
+                prompt = "".join(prompt_parts)
             raw = await caller(_SYSTEM_PROMPT, prompt, json_mode=False, label=label)
             gd = _strip_markdown_fences(raw)
             if not gd.startswith("extends"):
                 raise RuntimeError(f"output does not start with 'extends': {gd[:80]!r}")
+            gd = _normalize_enum_unset_literals(gd, slice_data)
+            gd = _normalize_entity_get_defaults(gd)
+            gd = _normalize_js_ternary(gd)
+            last_source = gd
 
-            ok, err = _godot_check_script(gd)
+            ok, err = _validate_generated_script(gd, slice_data, pool_names)
             if not ok:
                 last_err = err
                 _log.warning("%s attempt %d: godot check failed: %s", label, attempt + 1, err[:200])
@@ -734,6 +974,9 @@ async def generate_system_via_llm(
     constants: dict | None = None,
     pool_names: list[str] | None = None,
     system_description: str | None = None,
+    role_defs: dict | None = None,
+    role_groups: dict[str, list[str]] | None = None,
+    capabilities: dict[str, bool] | None = None,
 ) -> str:
     """Generate one system .gd via LLM. Module-level entry."""
     if caller is None:
@@ -747,4 +990,7 @@ async def generate_system_via_llm(
         constants=constants,
         pool_names=pool_names,
         system_description=system_description,
+        role_defs=role_defs,
+        role_groups=role_groups,
+        capabilities=capabilities,
     )

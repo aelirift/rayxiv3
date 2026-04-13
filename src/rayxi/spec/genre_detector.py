@@ -27,6 +27,8 @@ KEYWORD_TO_GENRE: dict[str, str] = {
     "fighter": "2d_fighter",
     "fighting": "2d_fighter",
     "street fighter": "2d_fighter",
+    "sf2": "2d_fighter",
+    "shoto": "2d_fighter",
     "punch": "2d_fighter",
     "kick": "2d_fighter",
     "hadouken": "2d_fighter",
@@ -69,7 +71,7 @@ def _embedding_detect(prompt: str, kb_dir: Path) -> tuple[float, str | None]:
     for f in process_dir.glob("*.md"):
         # Extract genre from filename: street_fighter_2_process.md → 2d_fighter (look up)
         # For now, derive from the file's first heading or use file stem
-        text = f.read_text()
+        text = f.read_text(encoding="utf-8", errors="ignore")
         # Take first ~2000 chars as the doc summary for embedding
         snippet = text[:2000]
         # The "genre" mapping from process file → genre slug:

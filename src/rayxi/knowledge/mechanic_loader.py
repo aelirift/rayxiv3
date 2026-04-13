@@ -1,10 +1,12 @@
-"""Mechanic template loader — expands KB templates into full role schemas.
+"""Mechanic template loader — imports template data into canonical req schema.
 
 Takes a genre mechanic template (e.g. 2d_fighter.json) and a game's HLR,
 and produces the complete property schema for each role.
 
-The LLM doesn't invent properties. The template defines them.
-The LLM only fills VALUES in DLR.
+Templates are import-time references only. This module rewrites borrowed
+template structure into canonical req naming before seed/build ever see it.
+If a template reference cannot be rewritten into the accepted req system set,
+it is recorded as an import issue instead of being silently dropped later.
 
 Usage:
     from rayxi.knowledge.mechanic_loader import load_fighter_schema
@@ -90,6 +92,103 @@ class ExpandedGameSchema:
     game_derived: list[PropertySpec] = field(default_factory=list)
     per_character_unique: dict[str, list[PropertySpec]] = field(default_factory=dict)
     mechanic_descriptions: dict[str, str] = field(default_factory=dict)  # system_name → description
+    template_import_issues: list[str] = field(default_factory=list)
+
+
+def _hlr_template_mapping(hlr: GameIdentity, template_mechanics: dict[str, dict]) -> dict[str, str]:
+    """Return {template_mechanic_name: canonical_hlr_system_name}."""
+    accepted: dict[str, str] = {}
+    origins: dict[str, str] = {}
+    for enum in hlr.enums:
+        if enum.name == "game_systems":
+            origins = dict(enum.value_template_origins or {})
+            break
+
+    if origins:
+        for canonical_name, origin_name in origins.items():
+            if not origin_name or origin_name == "(new)":
+                continue
+            if origin_name in template_mechanics:
+                accepted[origin_name] = canonical_name
+        return accepted
+
+    # Fallback for older HLRs that did not carry template provenance.
+    return {
+        system_name: system_name
+        for system_name in hlr.get_enum("game_systems")
+        if system_name in template_mechanics
+    }
+
+
+def _canonicalize_system_refs(
+    refs: list[str],
+    *,
+    template_to_canonical: dict[str, str],
+    canonical_systems: set[str],
+    issues: list[str],
+    context: str,
+) -> list[str]:
+    out: list[str] = []
+    for raw in refs:
+        if not raw:
+            continue
+        canonical = template_to_canonical.get(raw, raw)
+        if canonical not in canonical_systems:
+            issues.append(f"{context}: unresolved imported system reference '{raw}'")
+            continue
+        if canonical not in out:
+            out.append(canonical)
+    return out
+
+
+def _canonicalize_read_refs(
+    refs: list[str],
+    *,
+    template_to_canonical: dict[str, str],
+    canonical_systems: set[str],
+    allowed_non_system_refs: set[str],
+    issues: list[str],
+    context: str,
+) -> list[str]:
+    out: list[str] = []
+    for raw in refs:
+        if not raw:
+            continue
+        canonical = template_to_canonical.get(raw, raw)
+        if canonical in canonical_systems or canonical in allowed_non_system_refs:
+            if canonical not in out:
+                out.append(canonical)
+            continue
+        issues.append(f"{context}: unresolved imported system reference '{raw}'")
+    return out
+
+
+def _canonicalize_props(
+    props: list[PropertySpec],
+    *,
+    template_to_canonical: dict[str, str],
+    canonical_systems: set[str],
+    allowed_non_system_reads: set[str],
+    issues: list[str],
+    context_prefix: str,
+) -> list[PropertySpec]:
+    for prop in props:
+        prop.written_by = _canonicalize_system_refs(
+            prop.written_by,
+            template_to_canonical=template_to_canonical,
+            canonical_systems=canonical_systems,
+            issues=issues,
+            context=f"{context_prefix}.{prop.name}.written_by",
+        )
+        prop.read_by = _canonicalize_read_refs(
+            prop.read_by,
+            template_to_canonical=template_to_canonical,
+            canonical_systems=canonical_systems,
+            allowed_non_system_refs=allowed_non_system_reads,
+            issues=issues,
+            context=f"{context_prefix}.{prop.name}.read_by",
+        )
+    return props
 
 
 def _expand_properties(
@@ -171,8 +270,29 @@ def _expand_special_moves(
     return result
 
 
+def _empty_schema_from_hlr(hlr: GameIdentity) -> ExpandedGameSchema:
+    """Build a req-only schema scaffold when no template exists.
+
+    Downstream seed/MLR/DLR still need a schema object, but in no-template mode
+    the canonical structure must come from HLR/MLR/DLR rather than a borrowed
+    mechanic template. This scaffold intentionally contributes no borrowed
+    properties; it only preserves system descriptions for later auditing.
+    """
+    schema = ExpandedGameSchema(game_name=hlr.game_name)
+    for enum in hlr.enums:
+        if enum.name == "game_systems":
+            schema.mechanic_descriptions = dict(enum.value_descriptions or {})
+            break
+    _log.info(
+        "Schema: no mechanic template for %s (%s) — using req-only scaffold",
+        hlr.game_name,
+        hlr.genre,
+    )
+    return schema
+
+
 def load_game_schema(
-    template_path: Path,
+    template_path: Path | None,
     hlr: GameIdentity,
 ) -> ExpandedGameSchema:
     """Load a mechanic template and expand it for a specific game's HLR.
@@ -183,6 +303,9 @@ def load_game_schema(
     4. Expand special move templates (instance-unique, per character)
     5. Return the complete schema
     """
+    if template_path is None or not template_path.exists():
+        return _empty_schema_from_hlr(hlr)
+
     template = json.loads(template_path.read_text())
     schema = ExpandedGameSchema(game_name=hlr.game_name)
 
@@ -195,11 +318,34 @@ def load_game_schema(
     if "stage" in roles:
         schema.stage_schema.godot_base_node = roles["stage"].get("godot_base_node", "Sprite2D")
 
-    # Process each mechanic
-    for mech_name, mech in template.get("mechanics", {}).items():
+    template_mechanics = template.get("mechanics", {})
+    template_to_canonical = _hlr_template_mapping(hlr, template_mechanics)
+    canonical_systems = set(hlr.get_enum("game_systems"))
+    allowed_non_system_reads = {
+        role_name
+        for role_name in roles
+        if role_name.startswith("hud_")
+    }
+
+    if not template_to_canonical:
+        _log.info("Schema import: no template mechanics accepted by HLR for %s", hlr.game_name)
+
+    hlr_system_descs: dict[str, str] = {}
+    for enum in hlr.enums:
+        if enum.name == "game_systems":
+            hlr_system_descs = dict(enum.value_descriptions or {})
+            break
+
+    # Process only mechanics accepted by HLR provenance.
+    for mech_name, mech in template_mechanics.items():
+        canonical_system = template_to_canonical.get(mech_name)
+        if canonical_system is None:
+            continue
+
         # Store mechanic description for SystemNode embedding
-        if mech.get("description"):
-            schema.mechanic_descriptions[mech_name] = mech["description"]
+        desc = hlr_system_descs.get(canonical_system) or mech.get("description", "")
+        if desc:
+            schema.mechanic_descriptions[canonical_system] = desc
 
         is_instance_unique = mech.get("scope") == "instance_unique"
         base_scope = "instance_unique" if is_instance_unique else "role_generic"
@@ -207,29 +353,60 @@ def load_game_schema(
         # Fighter contributions
         fighter_contrib = mech.get("contributes_to_fighter", {})
         for cat in ["config", "state"]:
-            props = _expand_properties(
-                fighter_contrib.get(cat, []), cat, base_scope, mech_name)
+            props = _expand_properties(fighter_contrib.get(cat, []), cat, base_scope, mech_name)
+            props = _canonicalize_props(
+                props,
+                template_to_canonical=template_to_canonical,
+                canonical_systems=canonical_systems,
+                allowed_non_system_reads=allowed_non_system_reads,
+                issues=schema.template_import_issues,
+                context_prefix=f"template.{mech_name}.fighter.{cat}",
+            )
             schema.fighter_schema.properties.extend(props)
         for prop_def in fighter_contrib.get("derived", []):
-            schema.fighter_schema.properties.append(PropertySpec(
+            prop = PropertySpec(
                 name=prop_def["name"],
                 type=prop_def.get("type", ""),
                 category="derived",
                 scope="role_generic",
                 formula=prop_def.get("formula", ""),
-                read_by=prop_def.get("read_by", []),
+                read_by=_canonicalize_read_refs(
+                    prop_def.get("read_by", []),
+                    template_to_canonical=template_to_canonical,
+                    canonical_systems=canonical_systems,
+                    allowed_non_system_refs=allowed_non_system_reads,
+                    issues=schema.template_import_issues,
+                    context=f"template.{mech_name}.fighter.derived.{prop_def['name']}.read_by",
+                ),
                 purpose=prop_def.get("purpose", ""),
                 source_mechanic=mech_name,
-            ))
+            )
+            schema.fighter_schema.properties.append(prop)
 
         # Game contributions
         game_contrib = mech.get("contributes_to_game", {})
         for prop_def_list in game_contrib.get("config", []):
-            schema.game_config.extend(
-                _expand_properties([prop_def_list], "config", "role_generic", mech_name))
+            props = _expand_properties([prop_def_list], "config", "role_generic", mech_name)
+            props = _canonicalize_props(
+                props,
+                template_to_canonical=template_to_canonical,
+                canonical_systems=canonical_systems,
+                allowed_non_system_reads=allowed_non_system_reads,
+                issues=schema.template_import_issues,
+                context_prefix=f"template.{mech_name}.game.config",
+            )
+            schema.game_config.extend(props)
         for prop_def_list in game_contrib.get("state", []):
-            schema.game_state.extend(
-                _expand_properties([prop_def_list], "state", "role_generic", mech_name))
+            props = _expand_properties([prop_def_list], "state", "role_generic", mech_name)
+            props = _canonicalize_props(
+                props,
+                template_to_canonical=template_to_canonical,
+                canonical_systems=canonical_systems,
+                allowed_non_system_reads=allowed_non_system_reads,
+                issues=schema.template_import_issues,
+                context_prefix=f"template.{mech_name}.game.state",
+            )
+            schema.game_state.extend(props)
         for prop_def in game_contrib.get("derived", []):
             schema.game_derived.append(PropertySpec(
                 name=prop_def["name"],
@@ -237,7 +414,14 @@ def load_game_schema(
                 category="derived",
                 scope="role_generic",
                 formula=prop_def.get("formula", ""),
-                read_by=prop_def.get("read_by", []),
+                read_by=_canonicalize_read_refs(
+                    prop_def.get("read_by", []),
+                    template_to_canonical=template_to_canonical,
+                    canonical_systems=canonical_systems,
+                    allowed_non_system_refs=allowed_non_system_reads,
+                    issues=schema.template_import_issues,
+                    context=f"template.{mech_name}.game.derived.{prop_def['name']}.read_by",
+                ),
                 purpose=prop_def.get("purpose", ""),
                 source_mechanic=mech_name,
             ))
@@ -245,15 +429,29 @@ def load_game_schema(
         # Projectile contributions
         proj_contrib = mech.get("contributes_to_projectile", {})
         for cat in ["config", "state"]:
-            props = _expand_properties(
-                proj_contrib.get(cat, []), cat, "role_generic", mech_name)
+            props = _expand_properties(proj_contrib.get(cat, []), cat, "role_generic", mech_name)
+            props = _canonicalize_props(
+                props,
+                template_to_canonical=template_to_canonical,
+                canonical_systems=canonical_systems,
+                allowed_non_system_reads=allowed_non_system_reads,
+                issues=schema.template_import_issues,
+                context_prefix=f"template.{mech_name}.projectile.{cat}",
+            )
             schema.projectile_schema.properties.extend(props)
 
         # HUD contributions
         hud_bar_contrib = mech.get("contributes_to_hud_bar", {})
         for cat in ["config", "state"]:
-            props = _expand_properties(
-                hud_bar_contrib.get(cat, []), cat, "role_generic", mech_name)
+            props = _expand_properties(hud_bar_contrib.get(cat, []), cat, "role_generic", mech_name)
+            props = _canonicalize_props(
+                props,
+                template_to_canonical=template_to_canonical,
+                canonical_systems=canonical_systems,
+                allowed_non_system_reads=allowed_non_system_reads,
+                issues=schema.template_import_issues,
+                context_prefix=f"template.{mech_name}.hud_bar.{cat}",
+            )
             schema.hud_bar_schema.properties.extend(props)
 
         # Normal attack template expansion
@@ -295,6 +493,11 @@ def load_game_schema(
         "Schema: fighter=%d generic + %s unique per char, game=%d, projectile=%d, animations=%d",
         total_generic, total_unique_per_char, total_game, total_projectile, total_animations,
     )
+    if schema.template_import_issues:
+        _log.warning(
+            "Schema import: %d unresolved template references detected",
+            len(schema.template_import_issues),
+        )
 
     return schema
 

@@ -60,7 +60,10 @@ def _load_chunks(kb_dir: Path) -> list[tuple[str, str]]:
     chunks: list[tuple[str, str]] = []
     for pattern in HIGH_LEVEL_PATTERNS:
         for f in kb_dir.glob(pattern):
-            content = f.read_text()
+            try:
+                content = f.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                content = f.read_text(encoding="utf-8", errors="replace")
             for i, chunk in enumerate(_chunk_text(content)):
                 label = f"{f.relative_to(kb_dir)}#chunk{i}"
                 chunks.append((label, chunk))

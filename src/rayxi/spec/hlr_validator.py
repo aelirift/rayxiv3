@@ -42,46 +42,61 @@ def validate_hlr(
     hlr: GameIdentity,
     dynamic_fields: list[SchemaField] | None = None,
     hlt_provided: bool = False,
+    template_system_names: set[str] | None = None,
+    require_mechanic_specs_for_all_systems: bool = False,
 ) -> list[str]:
     errors: list[str] = []
     errors.extend(_check_fsm(hlr))
     errors.extend(_check_scenes(hlr))
     errors.extend(_check_enums(hlr))
-    errors.extend(_check_game_systems_annotations(hlr, hlt_provided))
-    errors.extend(_check_mechanic_specs(hlr))
+    errors.extend(_check_game_systems_annotations(hlr, hlt_provided, template_system_names))
+    errors.extend(_check_mechanic_specs(hlr, require_mechanic_specs_for_all_systems))
     errors.extend(_check_rules(hlr))
     errors.extend(_check_duplicates(hlr))
     errors.extend(_check_dynamic_fields_present(hlr, dynamic_fields or []))
     return errors
 
 
-def _check_mechanic_specs(hlr: GameIdentity) -> list[str]:
+def _check_mechanic_specs(
+    hlr: GameIdentity,
+    require_for_all_systems: bool = False,
+) -> list[str]:
     """Every (new) system must have a mechanic_spec. Every spec must be complete enough
     that MLR/DLR can build without guessing."""
     errors: list[str] = []
 
-    # Find all (new) systems from value_template_origins
-    new_systems: list[str] = []
+    target_systems: list[str] = []
     for e in hlr.enums:
         if e.name != "game_systems":
             continue
-        for v in e.values:
-            if e.value_template_origins.get(v, "") == "(new)":
-                new_systems.append(v)
+        if require_for_all_systems:
+            target_systems = list(e.values)
+        else:
+            for v in e.values:
+                if e.value_template_origins.get(v, "") == "(new)":
+                    target_systems.append(v)
+        break
 
-    if not new_systems:
+    if not target_systems:
         return errors  # nothing custom to validate
 
     specs_by_name = {m.system_name: m for m in hlr.mechanic_specs}
     hud_values = set(hlr.get_enum("hud_elements"))
+    role_name_re = re.compile(r"^[a-z][a-z0-9_]*$")
 
-    for sys_name in new_systems:
+    for sys_name in target_systems:
         spec = specs_by_name.get(sys_name)
         if spec is None:
-            errors.append(
-                f"mechanic_specs missing for '(new)' system '{sys_name}' — "
-                f"downstream phases have no way to scaffold it"
-            )
+            if require_for_all_systems:
+                errors.append(
+                    f"mechanic_specs missing for system '{sys_name}' in template-free mode — "
+                    f"downstream phases have no authoritative structure for it"
+                )
+            else:
+                errors.append(
+                    f"mechanic_specs missing for '(new)' system '{sys_name}' — "
+                    f"downstream phases have no way to scaffold it"
+                )
             continue
 
         if not spec.properties:
@@ -95,12 +110,11 @@ def _check_mechanic_specs(hlr: GameIdentity) -> list[str]:
             if not p.name or not p.type or not p.role:
                 errors.append(f"mechanic_specs['{sys_name}'].properties[{i}] missing required "
                               f"field (name/type/role)")
-            if p.role not in {"fighter", "projectile", "hud", "game", "stage", "character"}:
-                errors.append(f"mechanic_specs['{sys_name}'].properties[{i}] has invalid role "
-                              f"'{p.role}' — must be fighter/projectile/hud/game/stage/character")
-            if not p.written_by:
-                errors.append(f"mechanic_specs['{sys_name}'].properties[{i}].{p.name} has empty "
-                              f"written_by — no system writes it, it can never change")
+            if not role_name_re.match(p.role or ""):
+                errors.append(
+                    f"mechanic_specs['{sys_name}'].properties[{i}] has invalid role "
+                    f"'{p.role}' — must be snake_case runtime owner name"
+                )
 
         for i, h in enumerate(spec.hud_entities):
             if h.name not in hud_values:
@@ -115,7 +129,13 @@ def _check_mechanic_specs(hlr: GameIdentity) -> list[str]:
 
         # Spawn/destroy targets must reference a declared entity enum value
         game_objects = set(hlr.get_enum("game_objects"))
-        spawnable = game_objects | hud_values | set(hlr.get_enum("characters"))
+        runtime_roles = {
+            p.role
+            for mech in hlr.mechanic_specs
+            for p in mech.properties
+            if p.role not in {"game", "hud", "character"}
+        }
+        spawnable = game_objects | hud_values | set(hlr.get_enum("characters")) | runtime_roles
 
         for i, it in enumerate(spec.interactions):
             if not it.trigger or not it.effects:
@@ -153,7 +173,11 @@ _MLR_VALID_VERBS = {
 }
 
 
-def _check_game_systems_annotations(hlr: GameIdentity, hlt_provided: bool) -> list[str]:
+def _check_game_systems_annotations(
+    hlr: GameIdentity,
+    hlt_provided: bool,
+    template_system_names: set[str] | None = None,
+) -> list[str]:
     """Every game_systems value must have a rich value_description.
     When HLT was provided, every value must also have a value_template_origins entry."""
     errors: list[str] = []
@@ -175,6 +199,14 @@ def _check_game_systems_annotations(hlr: GameIdentity, hlt_provided: bool) -> li
                     errors.append(
                         f"game_systems value '{v}' missing value_template_origins entry "
                         f"(HLT was provided — must point to an HLT system name or '(new)')"
+                    )
+                elif (
+                    template_system_names is not None
+                    and origin != "(new)"
+                    and origin not in template_system_names
+                ):
+                    errors.append(
+                        f"game_systems value '{v}' points to unknown template origin '{origin}'"
                     )
     return errors
 

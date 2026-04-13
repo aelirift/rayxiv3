@@ -19,19 +19,59 @@ import asyncio
 import base64
 import json
 import logging
+import os
 from pathlib import Path
 
 import httpx
 
 _log = logging.getLogger("rayxi.llm.image_gen")
 
-_CONFIG_PATH = Path("/home/aeli/projects/aelibigcoder/config/llm_config.json")
 _IMAGE_API_URL = "https://api.minimaxi.chat/v1/image_generation"
 _DEFAULT_MODEL = "image-01"
 
 
+def _config_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    env_path = os.environ.get("RAYXI_LLM_CONFIG")
+    if env_path:
+        candidates.append(Path(env_path))
+    repo_root = Path(__file__).resolve().parents[3]
+    candidates.extend(
+        [
+            repo_root / "config" / "llm_config.json",
+            Path.cwd() / "config" / "llm_config.json",
+            Path.home() / ".config" / "rayxi" / "llm_config.json",
+            Path("/home/aeli/projects/aelibigcoder/config/llm_config.json"),
+        ]
+    )
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        deduped.append(candidate)
+        seen.add(key)
+    return deduped
+
+
+def _resolve_config_path() -> Path | None:
+    for candidate in _config_candidates():
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _load_api_key() -> str:
-    cfg = json.loads(_CONFIG_PATH.read_text())
+    env_key = os.environ.get("MINIMAX_API_KEY")
+    if env_key:
+        return env_key
+    config_path = _resolve_config_path()
+    if config_path is None:
+        raise FileNotFoundError(
+            "No MiniMax image config found. Set MINIMAX_API_KEY or RAYXI_LLM_CONFIG to enable image generation."
+        )
+    cfg = json.loads(config_path.read_text(encoding="utf-8"))
     return cfg["providers"]["minimax"]["api_key"]
 
 

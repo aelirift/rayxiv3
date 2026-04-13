@@ -1,74 +1,103 @@
 # Kart Racer — Genre Knowledge
 
+## Core View And Course Feel
+
+Modern kart racers are usually presented from a **third-person chase camera**
+behind the player vehicle, not a top-down view. The player should read:
+- the road surface immediately ahead
+- upcoming turns and hazards
+- rival vehicles in front and to the sides
+- scenery and horizon depth that make speed legible
+
+Tracks should feel **wide and long enough to race on**, with multiple rivals,
+clear racing lines, and enough room for drifting, passing, and item play.
+
 ## Core Mechanics
 
-### Mode 7 Pseudo-3D Perspective
-The defining visual of SNES-era kart racers. The road is not drawn as a sprite or
-image — it is **raycasted scanline by scanline** from a virtual camera looking at a
-flat world plane.
+### Countdown And Launch
+Most kart racers start with a visible countdown before input fully unlocks.
+Well-timed acceleration at the start can grant a **launch boost**.
 
-```
-Key parameters:
-  camera_height  — how high the camera is above the road plane (e.g. 64 units)
-  focal_length   — perspective strength (e.g. 200)
-  horizon_y      — screen row where sky meets road (e.g. screen_h / 2)
+### Drift And Mini-Turbo
+Drifting is a defining mechanic:
+1. Driver turns while holding a drift input at sufficient speed
+2. Vehicle enters a lateral slide state
+3. Charge builds over time
+4. Releasing drift pays out a short speed boost
 
-For each screen row y > horizon_y:
-  depth = camera_height * focal_length / (y - horizon_y)
-  world_point = camera_pos + depth * camera_forward_vector
-  color = sample_texture(world_point)
-```
+### Item Boxes And Inventory
+Courses place collectible item boxes on the racing line. Picking one up fills an
+inventory slot, and using it creates one of several effect types:
+- self speed boost
+- projectile
+- trap / hazard
+- shield / orbiting defense
+- temporary invincibility
+- area debuff
 
-### Sprite Billboard Rendering
-All game objects (other karts, items, obstacles) are 2D sprites scaled by depth:
-```
-sprite_height = focal_length / depth_to_sprite
-sprite_y = horizon_y + (screen_h - horizon_y) / 2 - sprite_height / 2
-```
-Draw in back-to-front order (farthest first) to handle occlusion correctly.
+### Boost Pads, Ramps, And Trick States
+Track geometry is an active mechanic source:
+- **boost pads** add speed on contact
+- **ramps / jumps** create a brief airborne state
+- airborne transitions can trigger **trick / landing boosts**
 
-### Lap and Checkpoint System
-Progress is tracked via **checkpoints** — invisible trigger lines across the road.
-```
-race_progress = checkpoint_index * LARGE_NUMBER + distance_along_current_segment
-position_rank = sort all karts by descending race_progress
-```
-Prevents shortcuts. Lap counted when checkpoint 0 is reached after all other checkpoints.
+### Coins Or Speed Resources
+Many modern kart racers include a collectible resource that affects speed,
+positioning, or race economy. If used, it must be shown clearly in the HUD and
+have a visible gameplay effect.
 
-### Drift Boost
-```
-1. Player holds drift key + steering at speed > drift_min_speed
-2. Drift charge timer starts (mini-turbo charges)
-3. Release drift → boost fires with magnitude based on charge time
-```
+### Off-Road, Recovery, And Hazards
+The course surface should matter:
+- off-road reduces speed and/or handling
+- hazards spin out, bounce, or slow the driver
+- falling off the course or severe mistakes should have a recovery mechanic
 
-### Item Distribution by Position
-Items are awarded with probability weighted by race position:
-- 1st place → bananas, green shells (defensive)
-- Last place → stars, blue shells, triple reds (offensive/catchup)
+### Alternate Traversal Modes
+Later-era kart racers often include at least one traversal variant beyond flat
+road driving:
+- gliding / air sections
+- underwater handling
+- adhesion / anti-gravity / wall-riding sections
 
-### Rubber Banding
-AI karts adjust speed based on distance to player:
-- If AI is far behind → speed multiplier increases (catches up)
-- If AI is far ahead → speed multiplier decreases (lets player catch up)
+Not every build needs every variant, but a prompt asking for a later-style
+Mario-Kart-like experience should not collapse into a flat road-only prototype.
 
-## Physics Model
-```
-accel applied: velocity += direction * acceleration * dt
-friction:      velocity *= friction^dt
-turn_rate:     turn = turn_speed * (speed / max_speed)
-offroad:       velocity *= offroad_friction; max_speed *= offroad_max_speed_mult
-```
+## AI And Race Management
 
-## HUD Elements
-- Lap counter (e.g. "LAP 2 / 3")
-- Position (e.g. "3rd / 5")
-- Current item (icon)
-- Mini-map (top-down bird's eye showing track outline + kart dots)
-- Speedometer
+AI rivals should:
+- follow the course
+- handle turns and drift opportunities
+- use items
+- respect the same race states as the player
 
-## Common Mistakes to Avoid
-- **DO NOT render road as a top-down 2D rectangle** — must use Mode 7 scanlines
-- **DO NOT skip sprite depth-sorting** — draw farthest sprites first
-- **DO NOT use a flat sprite for road** — road color and texture must shift with perspective
-- Mini-map is HUD only, never the main view
+Race management should include:
+- lap and checkpoint progression
+- current position / standings
+- race finish logic
+- post-race result state
+
+## HUD Expectations
+
+At minimum, kart race HUDs usually communicate:
+- current lap
+- current position
+- current item
+- speed or pace feedback
+- countdown / start state
+
+Often they also include:
+- minimap
+- collectible resource counter
+- boost / drift feedback
+
+## Common Mistakes To Avoid
+
+- Do not default the main race view to top-down when the prompt implies a
+  modern kart racer.
+- Do not make tracks toy-sized or narrower than the vehicles themselves.
+- Do not treat the camera as cosmetic; chase-camera readability is part of the
+  mechanic contract.
+- Do not stop at a checkpoint racer with drift and one item if the prompt asks
+  for a Mario-Kart-like experience.
+- If no template exists, synthesize the missing mechanics into canonical
+  HLR/MLR/DLR artifacts instead of silently omitting them.

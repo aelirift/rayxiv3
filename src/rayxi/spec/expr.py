@@ -15,15 +15,15 @@ Grammar (intentionally small — enough for every game formula you'd reasonably 
 
 Examples:
 
-  # fighter.current_hp += -damage_taken
-  {"kind": "op", "op": "sub", "left": {"kind": "ref", "path": "fighter.current_hp"},
+  # fighter.current_health += -damage_taken
+  {"kind": "op", "op": "sub", "left": {"kind": "ref", "path": "fighter.current_health"},
    "right": {"kind": "ref", "path": "event.damage_taken"}}
 
-  # hp_bar.fill_percent = current_hp / max_hp (clamped 0..1)
+  # hp_bar.fill_percent = current_health / max_health (clamped 0..1)
   {"kind": "call", "fn": "clamp", "args": [
     {"kind": "op", "op": "div",
-     "left": {"kind": "ref", "path": "fighter.current_hp"},
-     "right": {"kind": "ref", "path": "fighter.max_hp"}},
+     "left": {"kind": "ref", "path": "fighter.current_health"},
+     "right": {"kind": "ref", "path": "fighter.max_health"}},
     {"kind": "literal", "type": "float", "value": 0.0},
     {"kind": "literal", "type": "float", "value": 1.0}]}
 """
@@ -88,11 +88,11 @@ class LiteralExpr(BaseModel):
 
 class RefExpr(BaseModel):
     kind: Literal["ref"] = "ref"
-    path: str   # e.g. "fighter.current_hp", "const.max_rage_stacks", "event.damage_taken"
+    path: str   # e.g. "fighter.current_health", "const.max_rage_stacks", "event.damage_taken"
 
     def validate_shape(self) -> list[str]:
         if "." not in self.path:
-            return [f"ref path '{self.path}' must be 'namespace.name' (e.g. 'fighter.current_hp')"]
+            return [f"ref path '{self.path}' must be 'namespace.name' (e.g. 'fighter.current_health')"]
         return []
 
 

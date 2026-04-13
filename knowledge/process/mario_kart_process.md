@@ -1,231 +1,185 @@
-# Mario Kart — Game Process Specification
+# Modern Kart Racer — Game Process Specification
 
 ## Mode
-**Single player vs 4 AI karts.** Player starts at 4th position. Race ends when all karts finish.
+Single player vs AI racers. The player selects a driver and vehicle setup, then
+runs a lap-based race on a wide track with item boxes, drift boosts, and a
+visible countdown into active racing.
 
-## Rendering Approach — Mode 7 Pseudo-3D
-```
-Screen layout (800×600):
-  y=0..299   : SKY (gradient, top to bottom)
-  y=300      : HORIZON LINE
-  y=301..599 : ROAD (scanline raycasted from camera into world plane)
-```
+## Rendering Approach — Third-Person Chase Racing
 
-**Road scanline algorithm:**
-For each screen row `y` from `horizon_y+1` to `screen_h`:
-```python
-row_dist = camera_height * focal_length / (y - horizon_y)
-cos_a = cos(camera_angle)
-sin_a = sin(camera_angle)
-floor_x = camera_x + row_dist * cos_a
-floor_y_w = camera_y + row_dist * sin_a
-step_x = 2 * row_dist / screen_w * (-sin_a)
-step_y_w = 2 * row_dist / screen_w * cos_a
-floor_x -= step_x * (screen_w / 2)
-floor_y_w -= step_y_w * (screen_w / 2)
-for col in range(screen_w):
-    color = sample_road_at(floor_x, floor_y_w)  # grass or road based on track
-    draw_pixel(col, y, color)
-    floor_x += step_x
-    floor_y_w += step_y_w
-```
+The main gameplay view is a **third-person chase camera behind the lead player
+vehicle**.
 
-**Sprite rendering:**
-```python
-# For each sprite in depth-sorted order (farthest first):
-dx = sprite.world_x - camera_x
-dy = sprite.world_y - camera_y
-# Transform to camera space
-inv_det = 1.0 / (plane_x * dir_y - dir_x * plane_y)
-transform_x = inv_det * (dir_y * dx - dir_x * dy)
-transform_y = inv_det * (-plane_y * dx + plane_x * dy)  # depth
-if transform_y <= 0: continue  # behind camera
-sprite_screen_x = int(screen_w / 2 * (1 + transform_x / transform_y))
-sprite_height = abs(int(screen_h / transform_y))
-draw_sprite_column(sprite, sprite_screen_x, sprite_height, transform_y)
-```
+Required presentation characteristics:
+- visible road width and upcoming turns
+- clear horizon depth and background scenery
+- visible rival vehicles ahead/alongside
+- readable pickups, boost pads, ramps, and hazards
+- track scale large enough that a lap does not feel toy-sized
 
----
+Do not treat a top-down or scanline-only view as the default for a
+Mario-Kart-like prompt unless the user explicitly asks for retro/SNES/Mode-7.
 
 ## Global FSM
 ```
-S_MENU → S_CHARACTER_SELECT → S_TRACK_SELECT → S_COUNTDOWN → S_RACING
-                                                                    ↓
-                                                              S_FINISHED → S_PODIUM → S_MENU
+S_MENU -> S_CHARACTER_SELECT -> S_VEHICLE_SELECT -> S_TRACK_SELECT -> S_COUNTDOWN -> S_RACING
+                                                                                   |
+                                                                                   v
+                                                                             S_FINISHED -> S_PODIUM -> S_MENU
 ```
-**No multiplayer screens. No pause during racing in initial version.**
-
----
 
 ## S_MENU — Start Screen
 
-**Purpose:** Title screen. One key to start.
+Purpose: title / attract screen and entry into race flow.
 
-**Visual:**
-- "MARIO KART" title text (large, centered)
-- "Press SPACE to start" blinking below
-- Animated background kart driving across bottom
+Visual:
+- title/logo area
+- prompt to start
+- animated background or racer showcase
 
-**Inputs:** SPACE → transition to S_CHARACTER_SELECT
+Input:
+- confirm -> `S_CHARACTER_SELECT`
 
----
+## S_CHARACTER_SELECT — Driver Selection
 
-## S_CHARACTER_SELECT — Character Selection
+Purpose: choose the playable driver archetype.
 
-**Purpose:** Player picks a kart character from a grid.
+Visual:
+- roster portraits or cards
+- stats/handling summary
+- selection cursor and confirm state
 
-**Visual:**
-- Grid of 8 character portraits (2 rows × 4 cols)
-- Selection cursor (highlighted box)
-- Character name + stat bars (speed/accel/handling) below grid
-- Characters: Mario, Luigi, Peach, Toad, Yoshi, DK, Bowser, Koopa
+Input:
+- move selection
+- confirm -> `S_VEHICLE_SELECT`
 
-**Inputs:**
-- Arrow keys: move cursor
-- SPACE/ENTER: confirm selection → S_TRACK_SELECT
+## S_VEHICLE_SELECT — Vehicle Loadout
 
-**Properties initialized:** player.character_id, player.stats (from KB)
+Purpose: choose kart / bike / loadout traits that affect speed, acceleration,
+handling, traction, and drift feel.
 
----
+Visual:
+- vehicle preview
+- stat deltas
+- selected loadout summary
 
-## S_TRACK_SELECT — Track Selection
+Input:
+- cycle parts or presets
+- confirm -> `S_TRACK_SELECT`
 
-**Purpose:** Pick which track to race on.
+## S_TRACK_SELECT — Course Selection
 
-**Visual:**
-- Track name list or mini-map thumbnails
-- Highlighted selection
+Purpose: choose the race environment.
 
-**Inputs:**
-- UP/DOWN: move selection
-- SPACE/ENTER: confirm → S_COUNTDOWN
+Visual:
+- track preview card / thumbnail / minimap
+- summary of track tone and hazards
 
-**Properties initialized:** race.track_id, race.waypoints, race.road_half_width
-
----
+Input:
+- change track
+- confirm -> `S_COUNTDOWN`
 
 ## S_COUNTDOWN — Pre-Race Countdown
 
-**Purpose:** 3-2-1-GO! sequence before race begins.
+Purpose: stage racers on the grid, lock movement briefly, then start the race.
 
-**Visual:**
-- Mode 7 road already visible from starting position
-- All karts on starting grid
-- Large "3", "2", "1", "GO!" displayed center screen
-- Each number shown for 1 second
+Visual:
+- full race scene visible behind countdown
+- starting grid positions
+- countdown values `3`, `2`, `1`, then `GO`
 
-**Duration:** 3 seconds. Then auto-transition to S_RACING.
-
-**DO NOT:** allow player input to move kart. Start engine animation only.
-
----
+Rules:
+- the race should not begin moving before countdown completion
+- timed acceleration near the end of countdown may grant a launch boost
 
 ## S_RACING — Active Race
 
-**Purpose:** Main race loop.
+Purpose: the main playable race.
 
-**Camera:** Always tracks player kart. camera_x = player.world_x, camera_y = player.world_y, camera_angle = player.angle.
+### Camera
+- chase camera follows behind and slightly above the player vehicle
+- camera exposes upcoming turns and enough road width for race decisions
+- camera movement communicates speed and turning, but remains readable
 
-**Road rendering:** Mode 7 scanline algorithm (see above). All 300 scanlines per frame.
+### Core Controls
+- accelerate
+- brake / reverse
+- steer left / right
+- drift / hop
+- use item
 
-**HUD (overlaid after road/sprites drawn):**
-- TOP-LEFT: current lap (e.g. "LAP 2/3")
-- TOP-RIGHT: current position (e.g. "3rd")  
-- BOTTOM-LEFT: current item (icon)
-- BOTTOM-CENTER: speedometer
-- BOTTOM-RIGHT: mini-map (bird's eye view of track + kart dots)
+### Core Race Mechanics
+- countdown completion unlocks racing
+- launch boost from correct start timing
+- drifting charges mini-turbo and releasing drift grants boost
+- item boxes grant inventory
+- using items causes mechanic-appropriate effects
+- laps and checkpoints govern progress and position
+- AI racers compete on the same track
 
-**Player controls:**
-- UP/W: accelerate
-- DOWN/S: brake/reverse
-- LEFT/A: steer left
-- RIGHT/D: steer right
-- LSHIFT: drift (hold while turning at speed)
-- SPACE: use item
+### Track Interaction
+Tracks may contain any combination of:
+- boost pads
+- off-road areas
+- ramps / jump points
+- hazards
+- alternate traversal zones such as gliding, underwater driving, or adhesion /
+  anti-gravity sections
 
-**Race end:** When player completes `max_laps` laps → transition to S_FINISHED.
+### Collision And Recovery
+- kart-to-kart contact should resolve without overlap
+- trap / projectile hits should visibly affect control or speed
+- severe mistakes should have a recovery path instead of soft-locking the race
 
-**Collision:**
-- Kart-kart: push apart by collision_push_force
-- Kart-item: pick up item box, apply item effect
-- Kart-obstacle (banana/shell): spin_out effect (kart spins 360° over 60 frames, loses speed)
+### HUD
+At minimum show:
+- lap
+- current position
+- current item
+- countdown / race state
 
-**Position tracking:**
-```
-race_progress = checkpoint_index * 10000 + (1.0 - dist_to_next_cp / segment_len) * 10000
-position = rank among all karts by descending race_progress
-```
+Often also show:
+- speed
+- minimap
+- collectible resource count
+- boost / drift feedback
 
-**Item drop rule:** Item box respawns 5 seconds after being collected.
+## S_FINISHED — Finish State
 
----
+Purpose: show completion and freeze or ease out the active race.
 
-## S_FINISHED — Finish Screen
+Visual:
+- finish banner or placement reveal
+- final position
 
-**Purpose:** Show "FINISH!" after player crosses line.
+Transition:
+- after a short pause -> `S_PODIUM`
 
-**Visual:** Large "FINISH!" banner over frozen road view. Final position shown.
+## S_PODIUM — Results State
 
-**Duration:** 2 seconds, then → S_PODIUM.
+Purpose: show final standings and return flow.
 
----
+Visual:
+- race results list
+- winner emphasis / celebration
 
-## S_PODIUM — Results Screen
+Input:
+- confirm -> `S_MENU`
 
-**Purpose:** Show race results.
+## AI Racer Behavior
 
-**Visual:**
-- Static background
-- "RESULTS" header
-- List of all kart names + their finish times/positions (1st through 5th)
+AI racers should:
+1. follow the course cleanly
+2. respect race states and countdown
+3. take turns at speed
+4. use items in plausible situations
+5. remain competitive without teleporting or obviously cheating
 
-**Inputs:** SPACE/ENTER → S_MENU
+## Critical Rules
 
----
-
-## Mode 7 Implementation Notes
-
-**Track polygon check (on/off road):**
-```python
-def on_road(world_x, world_y, waypoints, half_width):
-    # Find nearest segment, compute perpendicular distance
-    min_dist = float('inf')
-    for i in range(len(waypoints) - 1):
-        seg_dist = point_to_segment_dist(world_x, world_y, waypoints[i], waypoints[i+1])
-        min_dist = min(min_dist, seg_dist)
-    return min_dist <= half_width
-```
-
-**Sky rendering:**
-```python
-for y in range(horizon_y):
-    t = y / horizon_y
-    r = lerp(sky_top[0], sky_bottom[0], t)
-    g = lerp(sky_top[1], sky_bottom[1], t)
-    b = lerp(sky_top[2], sky_bottom[2], t)
-    pygame.draw.line(surface, (r, g, b), (0, y), (screen_w, y))
-```
-
-**Rumble strips:** world positions within `road_half_width` to `road_half_width + rumble_width` draw in rumble_color.
-
-**Performance tip:** Use `pygame.surfarray` for bulk pixel writes during scanline phase instead of individual draw_pixel calls. Or use a numpy array and blit at end of scanline loop.
-
----
-
-## AI Kart Behavior
-
-Each AI kart follows the track waypoints:
-1. Target next waypoint
-2. Steer toward it using angle error * steering_kp
-3. Apply rubber-banding: if far behind player, multiply max_speed by rubber_band_mult
-4. Use items automatically after random delay (30–60 frames)
-
----
-
-## CRITICAL RENDERING RULES
-
-1. **DO NOT use pygame 2D top-down view** — always Mode 7 scanline rendering
-2. **DO NOT skip the scanline loop** — road must be perspective-projected
-3. All karts, items, and obstacles are sprites scaled by `focal_length / depth_z`
-4. Player kart is NOT drawn as a sprite — it's the camera. Draw kart shadow/front only.
-5. Mini-map shows top-down view of track + all kart positions (2D, in corner HUD only)
+1. Do not reduce a modern kart-racer prompt to a flat top-down checkpoint game.
+2. Do not omit major race mechanics just because no template exists; synthesize
+   them into canonical req artifacts.
+3. Do not let build or test invent the core feature set later. Countdown, race
+   flow, camera model, item flow, drift, progress, and race completion belong in
+   HLR/MLR/DLR.

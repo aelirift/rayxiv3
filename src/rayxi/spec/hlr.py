@@ -12,15 +12,25 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from rayxi.knowledge import KnowledgeBase, KnowledgeContext
+from rayxi.llm.json_tools import parse_json_response
 from rayxi.llm.protocol import LLMCaller
+from rayxi.spec.genre_expectations import expectations_prompt_text
 
 from rayxi.trace import get_trace
 
 from .hlr_validator import REQUIRED_ENUMS
-from .models import GameIdentity, SchemaField
+from .models import (
+    GameIdentity,
+    MechanicEffectSpec,
+    MechanicInteractionSpec,
+    MechanicPropertySpec,
+    MechanicSpec,
+    SchemaField,
+)
 from .schema_expander import expand_schema, fields_to_schema_text
 
 _log = logging.getLogger("rayxi.spec.hlr")
@@ -74,7 +84,7 @@ _SCHEMA_SHAPE: dict = {
             "summary": "<one-sentence description of the feature>",
             "properties": [
                 {
-                    "role": "<fighter|projectile|hud|game|stage>",
+                    "role": "<snake_case runtime owner role — e.g. fighter, vehicle, projectile, hud, game, stage, character>",
                     "name": "<snake_case>",
                     "type": "<int|float|bool|string|Vector2>",
                     "scope": "<instance|player_slot|game|character_def>",
@@ -232,6 +242,32 @@ _FILLED_EXAMPLE: dict = {
 }
 
 
+HLR_REPAIR_PROMPT = """\
+You are repairing an existing HLR JSON so it passes deterministic validation
+without changing the game's intended design.
+
+You will receive:
+1. The validation errors
+2. The current HLR JSON
+3. Optional template reference notes
+
+Rules:
+- Preserve gameplay intent, system names, scenes, enums, and mechanic structure
+  whenever possible. Make the smallest fix that resolves each error.
+- If a mechanic_spec HUD widget name is missing from `hud_elements`, prefer
+  adding it to the enum rather than renaming the widget.
+- If a spawn/destroy bare target is used consistently as a runtime object,
+  make sure it is declared in `game_objects` (or the appropriate enum).
+- Effect targets for verbs other than spawn/destroy must be `owner.property`
+  or `role.property`. Do NOT target system names directly.
+- Do NOT target `global_fsm` directly in interaction effects. Model the
+  intended state transition through canonical game properties instead.
+- In template-free mode, every `game_systems` value must remain req-defined
+  and must have a corresponding `mechanic_spec`.
+- Output ONLY the corrected full JSON object.
+"""
+
+
 def _build_required_enums_table() -> str:
     """Build the MUST HAVE enums table from the REQUIRED_ENUMS constant."""
     lines = [
@@ -305,6 +341,9 @@ entity flag meaning:
 - Every scene must have a unique FSM state.
 - The global FSM must be a complete graph — every state must be reachable and have an exit.
 - All names must be snake_case.
+- Runtime owner roles in `mechanic_specs[*].properties[*].role` are canonical after HLR.
+  Use the exact role names you want downstream to build from. Do NOT force
+  fighter terminology for non-fighting games.
 - Include ALL base fields AND all required enums. Set nullable fields to null rather than omitting.
 - Be exhaustive. Where unsure, make a reasonable design decision and state it.
 
@@ -400,6 +439,44 @@ async def run_hlr(
             "\n"
             f"### HLT Systems\n{sys_lines}"
         )
+    else:
+        prompt_parts.append(
+            "## No Template Available\n"
+            "There is no HLT for this genre. You must define the canonical runtime "
+            "systems and roles yourself.\n"
+            "- Treat EVERY `game_systems` value as req-defined.\n"
+            "- Set `value_template_origins[system_name]` to `\"(new)\"` for EVERY system.\n"
+            "- Emit a complete `mechanic_spec` for EVERY system so downstream phases "
+            "never need to guess or consult a missing template.\n"
+            "- You may borrow ideas from the KB, but the names/structure you emit here "
+            "become the authoritative contract."
+        )
+
+    hinted_genre = (
+        kb_context.game_data.get("_meta", {}).get("genre", "")
+        if isinstance(kb_context.game_data, dict)
+        else ""
+    )
+    if not hinted_genre:
+        lower_prompt = user_prompt.lower()
+        lower_sources = " ".join(kb_context.source_names).lower()
+        if "kart" in lower_prompt or "race" in lower_prompt or "kart_racer" in lower_sources:
+            hinted_genre = "kart_racer"
+        elif "fighter" in lower_prompt or "sf2" in lower_prompt or "2d_fighter" in lower_sources:
+            hinted_genre = "2d_fighter"
+    expectation_text = expectations_prompt_text(hinted_genre)
+    if expectation_text:
+        prompt_parts.append(
+            "## Genre Expectation Hints\n"
+            "Use these as deterministic expectation cues for the req stack.\n"
+            "- If the prompt implies a modern mainstream interpretation of the genre, do not "
+            "collapse it to the oldest or simplest historical version unless the user explicitly "
+            "asks for retro, SNES, 8-bit, or Mode-7 styling.\n"
+            "- Resolve these capabilities into canonical req-owned systems, properties, scenes, "
+            "or interactions whenever they belong in this build.\n"
+            "- If you intentionally omit one, the surrounding req design must clearly subsume it.\n"
+            f"{expectation_text}"
+        )
 
     # KB context — embedded chunks or keyword fallback
     if kb_chunks:
@@ -430,7 +507,7 @@ async def run_hlr(
     if trace:
         trace.llm_end(cid, output_chars=len(raw))
 
-    parsed = json.loads(raw)
+    parsed = parse_json_response(raw)
     parsed["kb_sources"] = kb_context.source_names
 
     # Capture unused_template_systems for the audit log (not part of GameIdentity)
@@ -447,6 +524,7 @@ async def run_hlr(
             _log.warning("HLR: failed to write unused systems log: %s", exc)
 
     result = GameIdentity.model_validate(parsed)
+    result = _normalize_game_identity(result, template_provided=bool(template_systems))
 
     base_count = len(result.model_fields_set - (result.model_extra or {}).keys())
     extra_count = len(result.extra_fields())
@@ -454,3 +532,495 @@ async def run_hlr(
               result.game_name, len(result.scenes), base_count, extra_count)
 
     return result, dynamic_fields
+
+
+def _enum_def(hlr: GameIdentity, name: str):
+    for enum in hlr.enums:
+        if enum.name == name:
+            return enum
+    return None
+
+
+def _snake_case_name(text: str) -> str:
+    clean = re.sub(r"[^a-z0-9]+", "_", (text or "").strip().lower()).strip("_")
+    return clean or "value"
+
+
+def _append_enum_values(hlr: GameIdentity, enum_name: str, values: list[str]) -> None:
+    enum = _enum_def(hlr, enum_name)
+    if enum is None:
+        return
+    for value in values:
+        if value and value not in enum.values:
+            enum.values.append(value)
+
+
+def _player_mode_has_human_players(player_mode: str) -> bool:
+    mode = (player_mode or "").strip().lower()
+    if not mode:
+        return True
+    if "cpu vs cpu" in mode or "spectator" in mode:
+        return False
+    return any(token in mode for token in ("1p", "2p", "player", "local", "solo"))
+
+
+def _is_non_ai_input_system(system_name: str) -> bool:
+    normalized = (system_name or "").lower()
+    if "ai" in normalized:
+        return False
+    return "input" in normalized or "control" in normalized
+
+
+def _is_control_property(prop: MechanicPropertySpec) -> bool:
+    name = (prop.name or "").lower()
+    return (
+        name.endswith("_input")
+        or name.endswith("_pressed")
+        or name.endswith("_held")
+        or name in {"move_direction", "aim_direction", "block_state", "input_buffer"}
+    )
+
+
+def _find_runtime_property(
+    hlr: GameIdentity,
+    role: str,
+    name: str,
+) -> MechanicPropertySpec | None:
+    for spec in hlr.mechanic_specs:
+        for prop in spec.properties:
+            if prop.role == role and prop.name == name:
+                return prop
+    return None
+
+
+def _clone_property_for_system(
+    prop: MechanicPropertySpec,
+    system_name: str,
+    *,
+    add_writer: bool = False,
+    add_reader: bool = False,
+) -> MechanicPropertySpec:
+    written_by = list(prop.written_by)
+    read_by = list(prop.read_by)
+    if add_writer and system_name not in written_by:
+        written_by.append(system_name)
+    if add_reader and system_name not in read_by:
+        read_by.append(system_name)
+    return MechanicPropertySpec(
+        role=prop.role,
+        name=prop.name,
+        type=prop.type,
+        scope=prop.scope,
+        purpose=prop.purpose,
+        written_by=written_by,
+        read_by=read_by,
+        reset_on=prop.reset_on,
+    )
+
+
+def _primary_runtime_role_for_spec(spec: MechanicSpec) -> str | None:
+    role_counts: dict[str, int] = {}
+    for prop in spec.properties:
+        if prop.role in {"game", "stage", "hud", "character"}:
+            continue
+        if prop.scope == "character_def":
+            continue
+        role_counts[prop.role] = role_counts.get(prop.role, 0) + 1
+    if not role_counts:
+        return None
+    return sorted(role_counts, key=lambda role: (-role_counts[role], role))[0]
+
+
+def _merge_control_candidate(
+    candidates: dict[str, dict[str, MechanicPropertySpec]],
+    prop: MechanicPropertySpec,
+) -> None:
+    role_bucket = candidates.setdefault(prop.role, {})
+    existing = role_bucket.get(prop.name)
+    if existing is None:
+        role_bucket[prop.name] = prop
+        return
+    for writer in prop.written_by:
+        if writer not in existing.written_by:
+            existing.written_by.append(writer)
+    for reader in prop.read_by:
+        if reader not in existing.read_by:
+            existing.read_by.append(reader)
+    if not existing.purpose and prop.purpose:
+        existing.purpose = prop.purpose
+
+
+def _inferred_input_props_for_trigger(
+    role: str,
+    system_name: str,
+    trigger: str,
+) -> list[MechanicPropertySpec]:
+    lowered = (trigger or "").lower()
+    if "input" not in lowered:
+        return []
+
+    inferred: list[MechanicPropertySpec] = []
+
+    def _append(name: str, type_name: str, purpose: str) -> None:
+        inferred.append(
+            MechanicPropertySpec(
+                role=role,
+                name=name,
+                type=type_name,
+                scope="instance",
+                purpose=purpose,
+                written_by=[],
+                read_by=[system_name],
+                reset_on="match_start",
+            )
+        )
+
+    if "acceler" in lowered or "throttle" in lowered:
+        _append("acceleration_input", "float", f"Human throttle input consumed by {system_name}.")
+    if "brake" in lowered:
+        _append("brake_input", "float", f"Human braking input consumed by {system_name}.")
+    if "steer" in lowered or "left/right" in lowered or "left or right" in lowered:
+        _append("steer_input", "float", f"Human steering input consumed by {system_name}.")
+    if "drift" in lowered:
+        _append("drift_input", "bool", f"Human drift control flag consumed by {system_name}.")
+    if "item" in lowered or "use_item" in lowered or "use item" in lowered:
+        _append("item_input", "bool", f"Human item-use flag consumed by {system_name}.")
+    if "jump" in lowered:
+        _append("jump_input", "bool", f"Human jump input consumed by {system_name}.")
+    if "block" in lowered:
+        _append("block_input", "bool", f"Human block input consumed by {system_name}.")
+    return inferred
+
+
+def _player_input_effects_for(role: str, prop_name: str) -> list[MechanicInteractionSpec]:
+    target = f"{role}.{prop_name}"
+    lowered = prop_name.lower()
+    if lowered == "acceleration_input":
+        return [
+            MechanicInteractionSpec(
+                trigger="player holds the accelerate control during active gameplay",
+                condition=f"{role}.is_ai_controlled is false",
+                effects=[MechanicEffectSpec(
+                    verb="set",
+                    target=target,
+                    description="Set throttle input from idle to full acceleration based on the player's accelerate control.",
+                )],
+            ),
+            MechanicInteractionSpec(
+                trigger="player releases the accelerate control or gameplay state disables manual control",
+                condition="always",
+                effects=[MechanicEffectSpec(
+                    verb="set",
+                    target=target,
+                    description="Return throttle input to zero so the vehicle stops accelerating.",
+                )],
+            ),
+        ]
+    if lowered == "steer_input":
+        return [
+            MechanicInteractionSpec(
+                trigger="player holds left or right steering controls during active gameplay",
+                condition=f"{role}.is_ai_controlled is false",
+                effects=[MechanicEffectSpec(
+                    verb="set",
+                    target=target,
+                    description="Set steering input negative for left, positive for right, and neutral when no steer control is held.",
+                )],
+            ),
+        ]
+    if lowered in {"drift_input", "item_input", "jump_input", "boost_input", "brake_input"}:
+        label = lowered.replace("_", " ")
+        return [
+            MechanicInteractionSpec(
+                trigger=f"player presses or holds the {label} control during active gameplay",
+                condition=f"{role}.is_ai_controlled is false",
+                effects=[MechanicEffectSpec(
+                    verb="set",
+                    target=target,
+                    description=f"Mirror the player's {label} control into the canonical runtime input flag.",
+                )],
+            ),
+            MechanicInteractionSpec(
+                trigger=f"player releases the {label} control",
+                condition="always",
+                effects=[MechanicEffectSpec(
+                    verb="set",
+                    target=target,
+                    description=f"Clear the {label} flag back to its neutral state.",
+                )],
+            ),
+        ]
+    return [
+        MechanicInteractionSpec(
+            trigger=f"player manipulates the control mapped to {lowered} during active gameplay",
+            condition=f"{role}.is_ai_controlled is false",
+            effects=[MechanicEffectSpec(
+                verb="set",
+                target=target,
+                description="Translate the player's live control state into this canonical runtime input property.",
+            )],
+        )
+    ]
+
+
+def _ensure_player_input_system(hlr: GameIdentity) -> None:
+    if not _player_mode_has_human_players(hlr.player_mode):
+        return
+
+    game_systems = _enum_def(hlr, "game_systems")
+    if game_systems is None:
+        return
+    if any(_is_non_ai_input_system(system_name) for system_name in game_systems.values):
+        return
+
+    role_candidates: dict[str, dict[str, MechanicPropertySpec]] = {}
+    for spec in hlr.mechanic_specs:
+        for prop in spec.properties:
+            if prop.role in {"game", "stage", "hud", "character", "projectile", "collectible", "game_objects"}:
+                continue
+            if prop.scope == "character_def":
+                continue
+            if _is_control_property(prop):
+                _merge_control_candidate(
+                    role_candidates,
+                    MechanicPropertySpec(
+                        role=prop.role,
+                        name=prop.name,
+                        type=prop.type,
+                        scope=prop.scope,
+                        purpose=prop.purpose,
+                        written_by=list(prop.written_by),
+                        read_by=list(prop.read_by),
+                        reset_on=prop.reset_on,
+                    ),
+                )
+        primary_role = _primary_runtime_role_for_spec(spec)
+        if primary_role is None:
+            continue
+        for interaction in spec.interactions:
+            for inferred_prop in _inferred_input_props_for_trigger(primary_role, spec.system_name, interaction.trigger):
+                _merge_control_candidate(role_candidates, inferred_prop)
+
+    if not role_candidates:
+        return
+
+    primary_role = sorted(
+        role_candidates,
+        key=lambda role: (-len(role_candidates[role]), role),
+    )[0]
+    control_props = [role_candidates[primary_role][name] for name in sorted(role_candidates[primary_role])]
+    if not control_props:
+        return
+
+    if _find_runtime_property(hlr, primary_role, "is_ai_controlled") is None and "cpu" in (hlr.player_mode or "").lower():
+        control_props.append(
+            MechanicPropertySpec(
+                role=primary_role,
+                name="is_ai_controlled",
+                type="bool",
+                scope="instance",
+                purpose=f"Whether this {primary_role} instance is driven by AI instead of local player input.",
+                written_by=[],
+                read_by=[],
+                reset_on="match_start",
+            )
+        )
+
+    system_name = "player_input_system"
+    insert_at = next(
+        (idx for idx, name in enumerate(game_systems.values) if "ai" in name.lower() or "physics" in name.lower()),
+        len(game_systems.values),
+    )
+    game_systems.values.insert(insert_at, system_name)
+    game_systems.value_template_origins[system_name] = "(new)"
+    control_prop_names = [prop.name for prop in control_props if prop.name != "is_ai_controlled"]
+    game_systems.value_descriptions[system_name] = (
+        f"Reads local human input for the {primary_role} role and translates it into canonical control properties. "
+        f"Objects: {primary_role}, game. Interactions: reads live keyboard/controller state, "
+        f"{primary_role}.is_ai_controlled, and active gameplay state; writes "
+        f"{', '.join(f'{primary_role}.{name}' for name in control_prop_names)}. "
+        f"Effects: updates per-frame player control state for human-controlled {primary_role} instances without overriding AI-controlled ones."
+    )
+
+    spec_props: list[MechanicPropertySpec] = [
+        _clone_property_for_system(
+            prop,
+            system_name,
+            add_writer=prop.name != "is_ai_controlled",
+            add_reader=prop.name == "is_ai_controlled",
+        )
+        for prop in control_props
+    ]
+    support_keys: list[tuple[str, str]] = [
+        (primary_role, "is_ai_controlled"),
+        ("game", "race_state"),
+        ("game", "round_state"),
+        ("game", "match_state"),
+    ]
+    seen_prop_keys = {(prop.role, prop.name, prop.scope) for prop in spec_props}
+    for role, prop_name in support_keys:
+        support_prop = _find_runtime_property(hlr, role, prop_name)
+        if support_prop is None:
+            continue
+        key = (support_prop.role, support_prop.name, support_prop.scope)
+        if key in seen_prop_keys:
+            continue
+        spec_props.append(_clone_property_for_system(support_prop, system_name, add_reader=True))
+        seen_prop_keys.add(key)
+
+    interactions: list[MechanicInteractionSpec] = []
+    for prop in control_props:
+        interactions.extend(_player_input_effects_for(primary_role, prop.name))
+
+    hlr.mechanic_specs.append(
+        MechanicSpec(
+            system_name=system_name,
+            summary=(
+                f"Captures local human controls for the {primary_role} role and writes canonical runtime input properties."
+            ),
+            properties=spec_props,
+            interactions=interactions,
+            hud_entities=[],
+            constants_for_dlr=[],
+        )
+    )
+
+
+def _normalize_collection_property_types(hlr: GameIdentity) -> None:
+    for spec in hlr.mechanic_specs:
+        for prop in spec.properties:
+            lowered_type = (prop.type or "").strip().lower()
+            lowered_name = (prop.name or "").strip().lower()
+            lowered_purpose = (prop.purpose or "").strip().lower()
+            if lowered_type not in {"vector2", "string"}:
+                continue
+            if (
+                lowered_name.endswith("_positions")
+                or lowered_name.endswith("_points")
+                or lowered_name.endswith("_waypoints")
+                or lowered_name.endswith("_checkpoints")
+                or "array of" in lowered_purpose
+                or "list of" in lowered_purpose
+                or ("positions" in lowered_purpose and any(token in lowered_purpose for token in ("array", "list")))
+            ):
+                prop.type = "list"
+
+
+def _normalize_game_system_names(hlr: GameIdentity) -> None:
+    game_systems = _enum_def(hlr, "game_systems")
+    if game_systems is None:
+        return
+
+    rename_map: dict[str, str] = {}
+    used: set[str] = set()
+    normalized_values: list[str] = []
+    for original in list(game_systems.values):
+        base = _snake_case_name(original)
+        candidate = base
+        suffix = 2
+        while candidate in used:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        rename_map[original] = candidate
+        used.add(candidate)
+        normalized_values.append(candidate)
+    game_systems.values = normalized_values
+
+    if game_systems.value_descriptions:
+        game_systems.value_descriptions = {
+            rename_map.get(name, _snake_case_name(name)): desc
+            for name, desc in game_systems.value_descriptions.items()
+        }
+    if game_systems.value_template_origins:
+        game_systems.value_template_origins = {
+            rename_map.get(name, _snake_case_name(name)): origin
+            for name, origin in game_systems.value_template_origins.items()
+        }
+
+    for spec in hlr.mechanic_specs:
+        spec.system_name = rename_map.get(spec.system_name, _snake_case_name(spec.system_name))
+        for prop in spec.properties:
+            prop.written_by = [rename_map.get(name, _snake_case_name(name)) for name in prop.written_by]
+            prop.read_by = [rename_map.get(name, _snake_case_name(name)) for name in prop.read_by]
+
+
+def _normalize_game_identity(hlr: GameIdentity, *, template_provided: bool) -> GameIdentity:
+    """Deterministic HLR cleanup for enum/spec drift.
+
+    This keeps the req artifact authoritative by folding directly referenced
+    mechanic-spec names back into the canonical enums instead of leaving later
+    phases to guess.
+    """
+    game_systems = _enum_def(hlr, "game_systems")
+    if game_systems is not None and not template_provided:
+        for system_name in game_systems.values:
+            game_systems.value_template_origins.setdefault(system_name, "(new)")
+
+    _normalize_game_system_names(hlr)
+
+    hud_names: list[str] = []
+    spawn_targets: list[str] = []
+    for spec in hlr.mechanic_specs:
+        hud_names.extend(hud.name for hud in spec.hud_entities if hud.name)
+        for interaction in spec.interactions:
+            for effect in interaction.effects:
+                if effect.verb in {"spawn", "destroy"} and "." not in effect.target and effect.target:
+                    spawn_targets.append(effect.target)
+
+    _append_enum_values(hlr, "hud_elements", hud_names)
+    _append_enum_values(hlr, "game_objects", spawn_targets)
+
+    valid_scopes = {"instance", "player_slot", "game", "character_def"}
+    for spec in hlr.mechanic_specs:
+        for prop in spec.properties:
+            if prop.scope in valid_scopes:
+                continue
+            if prop.scope == "character" or prop.role == "character":
+                prop.scope = "character_def"
+            elif prop.scope == "game" or prop.role == "game":
+                prop.scope = "game"
+            else:
+                prop.scope = "instance"
+    _normalize_collection_property_types(hlr)
+    _ensure_player_input_system(hlr)
+    return hlr
+
+
+async def repair_hlr(
+    hlr: GameIdentity,
+    validation_errors: list[str],
+    caller: LLMCaller,
+    *,
+    template_systems: dict[str, str] | None = None,
+    require_mechanic_specs_for_all_systems: bool = False,
+) -> GameIdentity:
+    prompt_parts = [
+        "## Validation Errors\n```json\n"
+        + json.dumps(validation_errors, indent=2)
+        + "\n```",
+        "## Current HLR JSON\n```json\n"
+        + hlr.model_dump_json(indent=2)
+        + "\n```",
+    ]
+    if template_systems:
+        prompt_parts.append(
+            "## Template Reference\n```json\n"
+            + json.dumps(template_systems, indent=2)
+            + "\n```"
+        )
+    if require_mechanic_specs_for_all_systems:
+        prompt_parts.append(
+            "## Template-Free Mode\n"
+            "Every game_systems value must remain req-defined with a full mechanic_spec."
+        )
+
+    raw = await caller(
+        HLR_REPAIR_PROMPT,
+        "\n\n".join(prompt_parts),
+        json_mode=True,
+        label="hlr_repair",
+    )
+    parsed = parse_json_response(raw)
+    parsed["kb_sources"] = hlr.kb_sources
+    repaired = GameIdentity.model_validate(parsed)
+    return _normalize_game_identity(repaired, template_provided=bool(template_systems))

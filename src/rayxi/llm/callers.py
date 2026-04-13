@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import urllib.parse
@@ -29,10 +30,10 @@ from pathlib import Path
 
 import httpx
 
+from .json_tools import extract_json_text, strip_llm_wrappers
 from .pool import PoolSlot, get_pool
 from .protocol import LLMCaller
 
-_CONFIG_PATH = Path("/home/aeli/projects/aelibigcoder/config/llm_config.json")
 _KIMI_CRED_PATH = Path.home() / ".kimi/credentials/kimi-code.json"
 _KIMI_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
 _KIMI_AUTH_URL = "https://auth.kimi.com/api/oauth/token"
@@ -42,8 +43,71 @@ _kimi_token_cache_time: float = 0
 _log = logging.getLogger("rayxi.llm.callers")
 
 
+def _config_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    env_path = os.environ.get("RAYXI_LLM_CONFIG")
+    if env_path:
+        candidates.append(Path(env_path))
+    repo_root = Path(__file__).resolve().parents[3]
+    candidates.extend(
+        [
+            repo_root / "config" / "llm_config.json",
+            Path.cwd() / "config" / "llm_config.json",
+            Path.home() / ".config" / "rayxi" / "llm_config.json",
+            Path("/home/aeli/projects/aelibigcoder/config/llm_config.json"),
+        ]
+    )
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        deduped.append(candidate)
+        seen.add(key)
+    return deduped
+
+
+def _resolve_config_path() -> Path | None:
+    for candidate in _config_candidates():
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _safe_response_payload(resp: httpx.Response) -> dict:
+    try:
+        data = resp.json()
+        if isinstance(data, dict):
+            return data
+        return {"data": data}
+    except Exception:
+        text = (resp.text or "").strip()
+        return {"raw_text": text[:1000]}
+
+
+def _http_error(provider: str, resp: httpx.Response) -> RuntimeError:
+    payload = _safe_response_payload(resp)
+    return RuntimeError(f"{provider} error {resp.status_code}: {json.dumps(payload)[:200]}")
+
+
+def _is_retryable_status(status_code: int) -> bool:
+    return status_code in {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+def _normalize_content(text: str, *, json_mode: bool) -> str:
+    clean = strip_llm_wrappers(text)
+    if json_mode:
+        clean = extract_json_text(clean)
+    return clean.strip()
+
+
 def _load_config() -> dict:
-    return json.loads(_CONFIG_PATH.read_text())
+    # Allow Kimi-only local setups to run without the shared JSON config file.
+    config_path = _resolve_config_path()
+    if config_path is None:
+        return {}
+    return json.loads(config_path.read_text(encoding="utf-8"))
 
 
 def _get_kimi_token() -> str:
@@ -101,10 +165,10 @@ class GlmCaller:
                     headers={"Authorization": f"Bearer {self._cfg['api_key']}", "Content-Type": "application/json"},
                     json=body,
                 )
-        data = resp.json()
+        data = _safe_response_payload(resp)
         if resp.status_code != 200:
-            raise RuntimeError(f"GLM error {resp.status_code}: {json.dumps(data)[:200]}")
-        text = data["choices"][0]["message"]["content"]
+            raise _http_error("GLM", resp)
+        text = _normalize_content(data["choices"][0]["message"]["content"], json_mode=json_mode)
         if not text:
             raise RuntimeError(f"GLM empty response: {json.dumps(data)[:300]}")
         return text
@@ -131,18 +195,13 @@ class MiniMaxCaller:
                     headers={"Authorization": f"Bearer {self._cfg['api_key']}", "Content-Type": "application/json"},
                     json=body,
                 )
-        data = resp.json()
+        data = _safe_response_payload(resp)
         if resp.status_code != 200:
-            raise RuntimeError(f"MiniMax error {resp.status_code}: {json.dumps(data)[:200]}")
+            raise _http_error("MiniMax", resp)
         choices = data.get("choices")
         if not choices or not choices[0].get("message", {}).get("content"):
             raise RuntimeError(f"MiniMax empty response: {json.dumps(data)[:300]}")
-        text = choices[0]["message"]["content"]
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-        # Extract JSON from markdown code fences if present
-        fence_match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, flags=re.DOTALL)
-        if fence_match:
-            text = fence_match.group(1).strip()
+        text = _normalize_content(choices[0]["message"]["content"], json_mode=json_mode)
         if not text:
             raise RuntimeError("MiniMax empty response after think-strip")
         return text
@@ -160,21 +219,74 @@ class KimiCaller:
         if json_mode:
             body["response_format"] = {"type": "json_object"}
         slot_label = f"Kimi/{label}" if label else "Kimi"
-        async with PoolSlot(get_pool(), slot_label):
-            async with httpx.AsyncClient(timeout=600) as client:
-                resp = await client.post(
-                    "https://api.kimi.com/coding/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json",
-                        "User-Agent": "claude-code/2.0",
-                    },
-                    json=body,
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "claude-code/2.0",
+        }
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                async with PoolSlot(get_pool(), slot_label):
+                    async with httpx.AsyncClient(timeout=1800) as client:
+                        resp = await client.post(
+                            "https://api.kimi.com/coding/v1/chat/completions",
+                            headers=headers,
+                            json=body,
+                        )
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_exc = exc
+                if attempt == 2:
+                    raise
+                _log.warning(
+                    "KimiCaller transport failure for %s on attempt %d — retrying",
+                    label or "request",
+                    attempt + 1,
                 )
-        data = resp.json()
-        if resp.status_code != 200:
-            raise RuntimeError(f"Kimi error {resp.status_code}: {json.dumps(data)[:200]}")
-        return data["choices"][0]["message"]["content"]
+                await asyncio.sleep(1.5)
+                continue
+
+            if resp.status_code != 200:
+                last_exc = _http_error("Kimi", resp)
+                if attempt < 2 and _is_retryable_status(resp.status_code):
+                    _log.warning(
+                        "KimiCaller HTTP %d for %s on attempt %d — retrying",
+                        resp.status_code,
+                        label or "request",
+                        attempt + 1,
+                    )
+                    await asyncio.sleep(1.5)
+                    continue
+                raise last_exc
+
+            data = _safe_response_payload(resp)
+            choices = data.get("choices")
+            if not choices or not choices[0].get("message", {}).get("content"):
+                last_exc = RuntimeError(f"Kimi empty response: {json.dumps(data)[:300]}")
+                if attempt < 2:
+                    _log.warning(
+                        "KimiCaller empty response for %s on attempt %d — retrying",
+                        label or "request",
+                        attempt + 1,
+                    )
+                    await asyncio.sleep(1.5)
+                    continue
+                raise last_exc
+            text = _normalize_content(choices[0]["message"]["content"], json_mode=json_mode)
+            if not text:
+                last_exc = RuntimeError(f"Kimi empty response: {json.dumps(data)[:300]}")
+                if attempt < 2:
+                    _log.warning(
+                        "KimiCaller blank normalized response for %s on attempt %d — retrying",
+                        label or "request",
+                        attempt + 1,
+                    )
+                    await asyncio.sleep(1.5)
+                    continue
+                raise last_exc
+            return text
+
+        raise RuntimeError(f"Kimi request failed after retries: {last_exc}")
 
 
 class FallbackCaller:
