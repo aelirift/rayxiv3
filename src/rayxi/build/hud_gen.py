@@ -675,6 +675,7 @@ func _process(_delta: float) -> void:
 
 @export var fighter_path: NodePath
 var fighter: Node
+var _track_map_texture: Texture2D
 
 @export var map_size: Vector2 = Vector2(240.0, 240.0)
 @export var background_color: Color = Color(0.02, 0.03, 0.05, 0.78)
@@ -692,6 +693,37 @@ func _ready() -> void:
 
 func _process(_delta: float) -> void:
     queue_redraw()
+
+func _heading_vector(raw_angle: float) -> Vector2:
+    var radians: float = deg_to_rad(raw_angle) if absf(raw_angle) > TAU * 2.0 else raw_angle
+    var heading := Vector2(cos(radians), sin(radians))
+    return heading.normalized() if heading.length() > 0.001 else Vector2.RIGHT
+
+func _load_track_map_texture() -> Texture2D:
+    if _track_map_texture != null:
+        return _track_map_texture
+    var dir := DirAccess.open("res://assets/common")
+    if dir == null:
+        return null
+    dir.list_dir_begin()
+    while true:
+        var file_name: String = dir.get_next()
+        if file_name == "":
+            break
+        if dir.current_is_dir():
+            continue
+        var lower: String = file_name.to_lower()
+        if not (lower.ends_with(".png") or lower.ends_with(".jpg") or lower.ends_with(".jpeg")):
+            continue
+        if not (lower.begins_with("track_overview_map") or lower.begins_with("track_map")):
+            continue
+        var texture_path := "res://assets/common/%s" % file_name
+        var loaded: Variant = load(texture_path)
+        if loaded is Texture2D:
+            _track_map_texture = loaded
+            break
+    dir.list_dir_end()
+    return _track_map_texture
 
 func _stage():
     var parent = get_parent()
@@ -736,7 +768,11 @@ func _checkpoint_points() -> Array[Vector2]:
     return points
 
 func _draw() -> void:
-    draw_rect(Rect2(Vector2.ZERO, size), background_color, true)
+    var map_rect := Rect2(Vector2.ZERO, size)
+    draw_rect(map_rect, background_color, true)
+    var map_texture := _load_track_map_texture()
+    if map_texture != null:
+        draw_texture_rect(map_texture, map_rect, false, Color(1.0, 1.0, 1.0, 0.92))
     draw_rect(Rect2(Vector2.ZERO, size), border_color, false, 3.0)
     var points: Array[Vector2] = _checkpoint_points()
     if points.size() < 2:
@@ -769,7 +805,17 @@ func _draw() -> void:
         if not (pos is Vector2):
             continue
         var mapped_pos: Vector2 = offset + Vector2((pos.x - min_x) * scale, (pos.y - min_y) * scale)
-        draw_circle(mapped_pos, 9.0, player_color if i == 0 else opponent_color)
+        var marker_color: Color = player_color if i == 0 else opponent_color
+        draw_circle(mapped_pos, 9.0, marker_color)
+        var facing_value: Variant = kart.get("facing_angle")
+        if facing_value == null:
+            facing_value = kart.get("angle")
+        var heading: Vector2 = _heading_vector(float(facing_value if facing_value != null else 0.0))
+        var tip: Vector2 = mapped_pos + heading * 15.0
+        var wing: Vector2 = Vector2(-heading.y, heading.x) * 5.0
+        draw_line(mapped_pos, tip, border_color, 2.0)
+        draw_line(tip, tip - heading * 6.0 + wing, border_color, 2.0)
+        draw_line(tip, tip - heading * 6.0 - wing, border_color, 2.0)
 """
 
     return None

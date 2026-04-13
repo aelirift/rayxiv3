@@ -464,14 +464,14 @@ func _status_header() -> String:
             if kart == null:
                 continue
             header.append(
-                "K%d SPD=%s LAP=%s POS=%s ITEM=%s" % [
-                    i + 1,
-                    str(snapped(float(kart.get("speed") if kart.get("speed") != null else 0.0), 0.1)),
-                    str(kart.get("current_lap")),
-                    str(kart.get("position_rank")),
-                    str(kart.get("held_item") if kart.get("held_item") != null else kart.get("current_item")),
-                ]
-            )
+                    "K%d SPD=%s LAP=%s POS=%s ITEM=%s" % [
+                        i + 1,
+                        str(snapped(float(kart.get("speed") if kart.get("speed") != null else 0.0), 0.1)),
+                        str(kart.get("current_lap")),
+                        str(kart.get("race_position") if kart.get("race_position") != null else kart.get("position_rank")),
+                        str(kart.get("held_item") if kart.get("held_item") != null else kart.get("current_item")),
+                    ]
+                )
     return " | ".join(header)
 
 func _capture_bootstrap_once() -> void:
@@ -517,13 +517,22 @@ func _capture_changes() -> void:
             var prefix: String = "kart.%s" % kart.name
             _watch(prefix + ".speed", snapped(float(kart.get("speed") if kart.get("speed") != null else 0.0), 0.1), "%s speed=%.1f" % [kart.name, float(kart.get("speed") if kart.get("speed") != null else 0.0)])
             _watch(prefix + ".lap", kart.get("current_lap"), "%s lap=%s" % [kart.name, str(kart.get("current_lap"))])
-            _watch(prefix + ".rank", kart.get("position_rank"), "%s rank=%s" % [kart.name, str(kart.get("position_rank"))])
+            var rank_value: Variant = kart.get("race_position")
+            if rank_value == null:
+                rank_value = kart.get("position_rank")
+            _watch(prefix + ".rank", rank_value, "%s rank=%s" % [kart.name, str(rank_value)])
             var item_value: Variant = kart.get("held_item")
             if item_value == null:
                 item_value = kart.get("current_item")
             _watch(prefix + ".item", item_value, "%s item=%s" % [kart.name, str(item_value)])
-            _watch(prefix + ".boost", kart.get("is_boosting"), "%s boosting=%s" % [kart.name, str(kart.get("is_boosting"))])
-            _watch(prefix + ".finish", kart.get("has_finished"), "%s finished=%s" % [kart.name, str(kart.get("has_finished"))])
+            var boost_value: Variant = kart.get("is_boosting")
+            if boost_value == null:
+                boost_value = float(kart.get("boost_timer") if kart.get("boost_timer") != null else 0.0) > 0.0
+            _watch(prefix + ".boost", boost_value, "%s boosting=%s" % [kart.name, str(boost_value)])
+            var finish_value: Variant = kart.get("race_finished")
+            if finish_value == null:
+                finish_value = kart.get("has_finished")
+            _watch(prefix + ".finish", finish_value, "%s finished=%s" % [kart.name, str(finish_value)])
 
     var active_projectiles: int = 0
     for projectile in pools.get("projectiles", []):
@@ -533,7 +542,10 @@ func _capture_changes() -> void:
 
     var active_items: int = 0
     for item_box in pools.get("item_boxs", []):
-        if item_box != null and bool(item_box.get("active")):
+        var item_active: Variant = item_box.get("active") if item_box != null else null
+        if item_active == null and item_box != null:
+            item_active = item_box.get("is_active")
+        if item_box != null and bool(item_active):
             active_items += 1
     _watch("scene.item_boxes", active_items, "item_boxes.active=%d" % active_items)
 """

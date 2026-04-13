@@ -35,6 +35,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import stat
@@ -266,6 +267,54 @@ def _actor_spawn_positions(actor_role: str) -> tuple[tuple[float, float], tuple[
     if actor_role == "fighter":
         return (520.0, 860.0), (1400.0, 860.0)
     return (760.0, 840.0), (1040.0, 840.0)
+
+
+def _vector2_points(raw_points) -> list[tuple[float, float]]:
+    points: list[tuple[float, float]] = []
+    if not isinstance(raw_points, list):
+        return points
+    for entry in raw_points:
+        if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+            try:
+                points.append((float(entry[0]), float(entry[1])))
+            except (TypeError, ValueError):
+                continue
+    return points
+
+
+def _vehicle_spawn_seed(scene_defaults: dict | None, count: int = 2) -> list[dict[str, float]]:
+    checkpoint_points = _vector2_points((scene_defaults or {}).get("checkpoint_positions"))
+    if len(checkpoint_points) < 2:
+        return []
+    start_x, start_y = checkpoint_points[0]
+    next_x, next_y = checkpoint_points[1]
+    dx = next_x - start_x
+    dy = next_y - start_y
+    length = (dx * dx + dy * dy) ** 0.5
+    if length <= 1e-3:
+        return []
+    tangent_x = dx / length
+    tangent_y = dy / length
+    normal_x = -tangent_y
+    normal_y = tangent_x
+    heading = math.atan2(tangent_y, tangent_x)
+    base_x = start_x - tangent_x * 140.0
+    base_y = start_y - tangent_y * 140.0
+    lane_spacing = 92.0
+    row_spacing = 86.0
+    middle = (count - 1) * 0.5
+    seeded: list[dict[str, float]] = []
+    for idx in range(count):
+        lateral = (idx - middle) * lane_spacing
+        longitudinal = float(idx // 2) * row_spacing
+        seeded.append(
+            {
+                "x": base_x + normal_x * lateral - tangent_x * longitudinal,
+                "y": base_y + normal_y * lateral - tangent_y * longitudinal,
+                "facing_angle": heading,
+            }
+        )
+    return seeded
 
 
 def _actor_placeholder_lines(actor_role: str, parent_name: str) -> list[str]:
@@ -562,6 +611,119 @@ def _resolve_char_asset_dir(game_name: str, genre: str, char: str, repo_root: Pa
     return None
 
 
+def _copy_visual_image(src_img: Path, dst_dir: Path) -> Path:
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from PIL import Image
+    except Exception:
+        dst_img = dst_dir / src_img.name
+        dst_img.write_bytes(src_img.read_bytes())
+        return dst_img
+
+    if src_img.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+        dst_img = dst_dir / src_img.name
+        dst_img.write_bytes(src_img.read_bytes())
+        return dst_img
+
+    def _largest_alpha_bbox(image):
+        alpha = image.getchannel("A")
+        width, height = image.size
+        pixels = alpha.load()
+        visited = bytearray(width * height)
+        best_count = 0
+        best_bbox: tuple[int, int, int, int] | None = None
+        for y in range(height):
+            for x in range(width):
+                idx = y * width + x
+                if visited[idx]:
+                    continue
+                visited[idx] = 1
+                if pixels[x, y] <= 8:
+                    continue
+                stack = [(x, y)]
+                count = 0
+                min_x = max_x = x
+                min_y = max_y = y
+                while stack:
+                    cx, cy = stack.pop()
+                    count += 1
+                    if cx < min_x:
+                        min_x = cx
+                    if cx > max_x:
+                        max_x = cx
+                    if cy < min_y:
+                        min_y = cy
+                    if cy > max_y:
+                        max_y = cy
+                    for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+                        if nx < 0 or ny < 0 or nx >= width or ny >= height:
+                            continue
+                        nidx = ny * width + nx
+                        if visited[nidx]:
+                            continue
+                        visited[nidx] = 1
+                        if pixels[nx, ny] > 8:
+                            stack.append((nx, ny))
+                if count > best_count:
+                    best_count = count
+                    best_bbox = (min_x, min_y, max_x + 1, max_y + 1)
+        if best_bbox is None or best_count < 48:
+            return image.getbbox()
+        return best_bbox
+
+    converted = Image.open(src_img).convert("RGBA")
+    pixels = list(converted.getdata())
+    for idx, (r, g, b, a) in enumerate(pixels):
+        if a > 0 and r >= 244 and g >= 244 and b >= 244:
+            pixels[idx] = (r, g, b, 0)
+    converted.putdata(pixels)
+    width, height = converted.size
+    rgba = converted.load()
+    edge_stack: list[tuple[int, int]] = []
+    visited = bytearray(width * height)
+
+    def _is_light_background(px: tuple[int, int, int, int]) -> bool:
+        r, g, b, a = px
+        if a <= 0:
+            return False
+        high = min(r, g, b) >= 226
+        low_variance = max(r, g, b) - min(r, g, b) <= 24
+        return high and low_variance
+
+    for x in range(width):
+        edge_stack.append((x, 0))
+        edge_stack.append((x, height - 1))
+    for y in range(height):
+        edge_stack.append((0, y))
+        edge_stack.append((width - 1, y))
+    while edge_stack:
+        x, y = edge_stack.pop()
+        if x < 0 or y < 0 or x >= width or y >= height:
+            continue
+        idx = y * width + x
+        if visited[idx]:
+            continue
+        visited[idx] = 1
+        pixel = rgba[x, y]
+        if not _is_light_background(pixel):
+            continue
+        rgba[x, y] = (pixel[0], pixel[1], pixel[2], 0)
+        edge_stack.extend(((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)))
+    bbox = _largest_alpha_bbox(converted)
+    if bbox is not None:
+        min_x, min_y, max_x, max_y = bbox
+        padding = 6
+        min_x = max(min_x - padding, 0)
+        min_y = max(min_y - padding, 0)
+        max_x = min(max_x + padding, converted.width)
+        max_y = min(max_y + padding, converted.height)
+        if max_x > min_x and max_y > min_y:
+            converted = converted.crop((min_x, min_y, max_x, max_y))
+    dst_img = dst_dir / f"{src_img.stem}.png"
+    converted.save(dst_img)
+    return dst_img
+
+
 def _copy_character_assets(
     game_name: str,
     genre: str,
@@ -579,10 +741,6 @@ def _copy_character_assets(
     """
     dst_root = godot_dir / "assets"
     atlas: dict[str, dict[str, str]] = {}
-    try:
-        from PIL import Image
-    except Exception:
-        Image = None
     for char in characters:
         src_dir = _resolve_char_asset_dir(game_name, genre, char, repo_root)
         if src_dir is None:
@@ -591,20 +749,7 @@ def _copy_character_assets(
         dst_dir.mkdir(parents=True, exist_ok=True)
         char_atlas: dict[str, str] = {}
         for src_img in sorted(list(src_dir.glob("*.png")) + list(src_dir.glob("*.jpg"))):
-            dst_img = dst_dir / src_img.name
-            if Image is not None and src_img.suffix.lower() in {".jpg", ".jpeg"}:
-                converted = Image.open(src_img).convert("RGBA")
-                pixels = []
-                for r, g, b, a in converted.getdata():
-                    if r >= 240 and g >= 240 and b >= 240:
-                        pixels.append((r, g, b, 0))
-                    else:
-                        pixels.append((r, g, b, a))
-                converted.putdata(pixels)
-                dst_img = dst_dir / f"{src_img.stem}.png"
-                converted.save(dst_img)
-            else:
-                dst_img.write_bytes(src_img.read_bytes())
+            dst_img = _copy_visual_image(src_img, dst_dir)
             # Derive label: strip leading "{char}_" prefix if present
             stem = dst_img.stem
             label = stem[len(char) + 1 :] if stem.startswith(char + "_") else stem
@@ -630,10 +775,6 @@ def _copy_slot_visual_assets(
 ) -> dict[str, dict[str, str]]:
     dst_root = godot_dir / "assets"
     atlas: dict[str, dict[str, str]] = {}
-    try:
-        from PIL import Image
-    except Exception:
-        Image = None
     for slot_name in slot_names:
         src_dir = _slot_visual_asset_dir(game_name, repo_root, slot_name)
         if src_dir is None:
@@ -644,24 +785,20 @@ def _copy_slot_visual_assets(
         slot_atlas: dict[str, str] = {}
         for src_img in sorted(list(src_dir.glob("*.png")) + list(src_dir.glob("*.jpg"))):
             stem = src_img.stem
-            if not stem.startswith(prefix + "_"):
-                stem = f"{prefix}_{stem}"
-            dst_suffix = ".png" if src_img.suffix.lower() in {".jpg", ".jpeg"} else src_img.suffix.lower()
-            dst_img = dst_dir / f"{stem}{dst_suffix}"
-            if Image is not None and src_img.suffix.lower() in {".jpg", ".jpeg"}:
-                converted = Image.open(src_img).convert("RGBA")
-                pixels = []
-                for r, g, b, a in converted.getdata():
-                    if r >= 240 and g >= 240 and b >= 240:
-                        pixels.append((r, g, b, 0))
-                    else:
-                        pixels.append((r, g, b, a))
-                converted.putdata(pixels)
-                converted.save(dst_img)
-            else:
-                dst_img.write_bytes(src_img.read_bytes())
             label = stem[len(prefix) + 1 :] if stem.startswith(prefix + "_") else stem
+            if not label:
+                continue
+            staged_img = _copy_visual_image(src_img, dst_dir)
+            dst_img = dst_dir / f"{label}.png"
+            if staged_img != dst_img:
+                if dst_img.exists():
+                    dst_img.unlink()
+                staged_img.rename(dst_img)
             slot_atlas[label] = f"res://assets/{prefix}/{dst_img.name}"
+        for sidecar in sorted(src_dir.glob("*.json")):
+            if sidecar.name.lower() in {"asset_overrides.json", "asset_prompt_manifest.json"}:
+                continue
+            shutil.copyfile(sidecar, dst_dir / sidecar.name)
         if slot_atlas:
             atlas[slot_name] = slot_atlas
             print(f"    slot assets: {slot_name} ← {src_dir.relative_to(repo_root)} ({len(slot_atlas)} sprites)")
@@ -690,10 +827,43 @@ def _copy_common_assets(
     dst_dir = godot_dir / "assets" / "common"
     dst_dir.mkdir(parents=True, exist_ok=True)
     copied: dict[str, str] = {}
+    staged_files: list[Path] = []
     for src_img in sorted(list(src_dir.glob("*.png")) + list(src_dir.glob("*.jpg")) + list(src_dir.glob("*.jpeg"))):
-        dst_img = dst_dir / src_img.name
-        dst_img.write_bytes(src_img.read_bytes())
+        dst_img = _copy_visual_image(src_img, dst_dir)
         copied[src_img.name] = f"res://assets/common/{dst_img.name}"
+        staged_files.append(dst_img)
+    for sidecar in sorted(src_dir.glob("*.json")):
+        if sidecar.name.lower() in {"asset_overrides.json", "asset_prompt_manifest.json"}:
+            continue
+        shutil.copyfile(sidecar, dst_dir / sidecar.name)
+
+    alias_specs: dict[str, tuple[str, ...]] = {
+        "track_backdrop.png": ("track_backdrop", "track_backdrop_", "backdrop_"),
+        "track_overview_map.png": ("track_overview_map", "track_map", "track_overview_"),
+        "road_surface_tile.png": ("road_surface_tile", "road_tile", "track_road_tile"),
+        "road_shoulder_tile.png": ("road_shoulder_tile", "shoulder_tile", "track_shoulder_tile"),
+        "grass_ground_tile.png": ("grass_ground_tile", "grass_tile", "ground_tile"),
+        "barrier_segment.png": ("barrier_segment", "guardrail", "barrier_"),
+        "direction_sign.png": ("direction_sign", "arrow_sign", "sign_"),
+        "festival_banner.png": ("festival_banner", "banner_"),
+        "tree_cluster.png": ("tree_cluster", "tree_", "scenery_tree"),
+        "cloud_card.png": ("cloud_card", "cloud_"),
+    }
+    for alias_name, prefixes in alias_specs.items():
+        alias_path = dst_dir / alias_name
+        if alias_path.exists():
+            copied[alias_name] = f"res://assets/common/{alias_name}"
+            continue
+        match: Path | None = None
+        for staged in staged_files:
+            stem = staged.stem.lower()
+            if any(stem == prefix or stem.startswith(prefix) for prefix in prefixes):
+                match = staged
+                break
+        if match is None:
+            continue
+        shutil.copyfile(match, alias_path)
+        copied[alias_name] = f"res://assets/common/{alias_name}"
     if copied:
         print(f"    common assets: common <- {src_dir.relative_to(repo_root)} ({len(copied)} files)")
     return copied
@@ -897,6 +1067,7 @@ def _patch_main_tscn_scripts(
     actor_role: str,
     floor_y: float | None = None,
     has_ai_controlled_flag: bool = False,
+    scene_defaults: dict | None = None,
 ) -> None:
     """Rewrite the fighting.tscn so p1_fighter/p2_fighter point to the
     characters declared in HLR. If only one character, both fighters use it
@@ -963,7 +1134,14 @@ def _patch_main_tscn_scripts(
     if has_ai_controlled_flag:
         content = _set_node_property(content, p1_name, "is_ai_controlled", "false")
         content = _set_node_property(content, p2_name, "is_ai_controlled", "true")
-    if floor_y is not None and float(floor_y) > 0.0:
+    vehicle_seed = [] if actor_role == "fighter" else _vehicle_spawn_seed(scene_defaults, 2)
+    if vehicle_seed:
+        p1_seed, p2_seed = vehicle_seed[:2]
+        content = _set_node_property(content, p1_name, "position", f"Vector2({p1_seed['x']}, {p1_seed['y']})")
+        content = _set_node_property(content, p2_name, "position", f"Vector2({p2_seed['x']}, {p2_seed['y']})")
+        content = _set_node_property(content, p1_name, "facing_angle", repr(float(p1_seed["facing_angle"])))
+        content = _set_node_property(content, p2_name, "facing_angle", repr(float(p2_seed["facing_angle"])))
+    elif floor_y is not None and float(floor_y) > 0.0:
         floor_y_literal = repr(float(floor_y))
         p1_pos, p2_pos = _actor_spawn_positions(actor_role)
         content = _set_node_property(content, p1_name, "position", f"Vector2({p1_pos[0]}, {floor_y_literal})")
@@ -1153,6 +1331,10 @@ async def build(
         asset_validation.model_dump_json(indent=2),
         encoding="utf-8",
     )
+    (game_asset_dir / "asset_validation.json").write_text(
+        asset_validation.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
     print(f"  Asset manifest: {len(asset_prompt_manifest.entries)} request(s)")
     print(
         "  Asset readiness: "
@@ -1160,6 +1342,10 @@ async def build(
         f"{asset_validation.summary.get('partial', 0)} partial / "
         f"{asset_validation.summary.get('missing', 0)} missing"
     )
+    if asset_validation.blockers:
+        print("  Asset blockers:")
+        for blocker in asset_validation.blockers[:8]:
+            print(f"    - {blocker}")
     role_defs = {name: role.model_dump(exclude_none=True) for name, role in contract.roles.items()}
     primary_actor_role = _primary_actor_role(role_defs)
     primary_actor_meta = role_defs.get(primary_actor_role, {})
@@ -1172,6 +1358,7 @@ async def build(
     resolved_main_scene = main_scene or _pick_default_main_scene_name(
         list(contract.scenes) or [scene.scene_name for scene in hlr.scenes]
     )
+    resolved_scene_defaults = dict(contract.scene_defaults.get(resolved_main_scene, {}))
     _apply_property_aliases(
         imap,
         dict(contract.property_aliases),
@@ -1262,6 +1449,7 @@ async def build(
         primary_actor_role,
         floor_y=floor_y,
         has_ai_controlled_flag=f"{primary_actor_role}.is_ai_controlled" in imap.nodes,
+        scene_defaults=resolved_scene_defaults,
     )
     _patch_runtime_role_scripts(godot_dir, resolved_main_scene, role_defs, actor_role=primary_actor_role)
     asset_atlas = _copy_character_assets(game_name, genre, godot_dir, characters, repo_root)
@@ -1314,7 +1502,7 @@ async def build(
         godot_dir=godot_dir,
         scene_name=resolved_main_scene,
         role_defs=role_defs,
-        scene_defaults=dict(contract.scene_defaults.get(resolved_main_scene, {})),
+        scene_defaults=resolved_scene_defaults,
         role_groups=dict(contract.role_groups),
         capabilities=dict(contract.capabilities),
     )

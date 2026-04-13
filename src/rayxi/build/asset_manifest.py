@@ -62,6 +62,7 @@ class AssetPromptEntry(BaseModel):
     frame_count: int = 1
     aspect_ratio: str = "1:1"
     transparent_background: bool = True
+    presentation_contract: dict[str, Any] = Field(default_factory=dict)
     style_tags: list[str] = Field(default_factory=list)
     review_checklist: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
@@ -130,16 +131,40 @@ _FIGHTER_VFX_SPECS: tuple[tuple[str, str, int], ...] = (
 )
 
 _VEHICLE_ASSET_SPECS: tuple[tuple[str, str, int], ...] = (
-    ("kart_idle", "hero kart render in racing stance, driver seated, readable silhouette", 1),
-    ("kart_turn_left", "kart banking left under load, tires angled, speed readable", 1),
-    ("kart_turn_right", "kart banking right under load, tires angled, speed readable", 1),
-    ("kart_boost", "kart with boost state, rear exhaust trail, aggressive acceleration read", 1),
+    (
+        "kart_idle",
+        "rear chase-camera gameplay render with the driver and kart seen from behind, centered in-lane and driving away from the player",
+        1,
+    ),
+    (
+        "kart_turn_left",
+        "rear chase-camera gameplay render banking left from the player's perspective while still driving away from the camera",
+        1,
+    ),
+    (
+        "kart_turn_right",
+        "rear chase-camera gameplay render banking right from the player's perspective while still driving away from the camera",
+        1,
+    ),
+    (
+        "kart_boost",
+        "rear chase-camera gameplay render in boost state with exhaust energy and stronger speed read while still facing away from the camera",
+        1,
+    ),
     ("driver_portrait", "driver portrait for HUD or selection card", 1),
 )
 
 _COMMON_RACE_ASSETS: tuple[tuple[str, str, int, str], ...] = (
     ("track_backdrop", "wide race backdrop", 1, "very wide modern arcade racing backdrop with mountains, clouds, depth, and horizon scale"),
     ("track_overview_map", "track overview map", 1, "clean overhead course map for minimap and course preview"),
+    ("road_surface_tile", "road surface tile", 1, "seamless road-surface tile for repeating across long arcade racing lanes"),
+    ("road_shoulder_tile", "road shoulder tile", 1, "seamless shoulder or curb tile for the edge of a racing lane"),
+    ("grass_ground_tile", "grass ground tile", 1, "seamless grass or ground tile that can repeat beside the road"),
+    ("barrier_segment", "barrier segment", 1, "readable bumper or guardrail segment for track edges"),
+    ("direction_sign", "direction sign", 1, "trackside direction sign or arrow marker readable at race speed"),
+    ("festival_banner", "festival banner", 1, "trackside hanging banner or sign dressing that adds world atmosphere"),
+    ("tree_cluster", "tree cluster", 1, "trackside tree or shrub cluster readable as scenery dressing"),
+    ("cloud_card", "cloud card", 1, "large scenic cloud card for horizon layering"),
     ("countdown_marshal", "countdown marshal", 1, "floating countdown marshal character in a cloud, expressive and readable"),
     ("item_box", "item box", 1, "random item pickup box with bright readable silhouette"),
     ("shell_projectile", "shell projectile", 1, "arcade kart shell projectile, readable at small size"),
@@ -166,6 +191,12 @@ _TRACK_REVIEW = [
     "Track should read as a full course environment, not a toy-scale loop.",
     "Road width should visually support at least four karts side by side.",
     "Background should provide horizon depth and long-course atmosphere.",
+]
+
+_CHASE_RACER_REVIEW = [
+    "Kart render should read from a third-person chase camera, with the driver and kart facing away from the player.",
+    "Turning renders should preserve the same kart shell and driver identity while banking in the player's left or right direction.",
+    "Reject renders that look head-on, like the kart is driving out of the screen instead of into the course.",
 ]
 
 
@@ -310,6 +341,11 @@ def _fighter_entry(
         frame_count=frame_count,
         aspect_ratio="3:4",
         transparent_background=True,
+        presentation_contract={
+            "camera_perspective": "side_view",
+            "asset_role": "combat_actor_animation",
+            "player_focus": "lateral_combat_readability",
+        },
         style_tags=_unique(_base_style_tags(prompt) + ["combat actor", display_label.lower()]),
         review_checklist=list(_CONSISTENCY_REVIEW),
         notes=[
@@ -365,6 +401,11 @@ def _fighter_vfx_entry(
         frame_count=frame_count,
         aspect_ratio="1:1",
         transparent_background=True,
+        presentation_contract={
+            "camera_perspective": "side_view",
+            "asset_role": "combat_vfx",
+            "player_focus": "interaction_readability",
+        },
         style_tags=_unique(_base_style_tags(prompt) + ["combat vfx"]),
         review_checklist=[
             "Effect shape should stay readable over a busy stage background.",
@@ -400,7 +441,10 @@ def _vehicle_entry(
         "asset_name": _title(label),
         "frame_count": 1,
         "action_description": description,
-        "style_direction": "premium modern kart materials, readable gameplay silhouette, transparent background",
+        "style_direction": (
+            "premium modern kart materials, third-person chase-camera gameplay readability, "
+            "rear-facing driving view, transparent background"
+        ),
         "game_prompt": prompt,
     }
     return AssetPromptEntry(
@@ -421,9 +465,17 @@ def _vehicle_entry(
         frame_count=1,
         aspect_ratio="4:3",
         transparent_background=True,
+        presentation_contract={
+            "camera_perspective": "chase_rear",
+            "asset_role": "player_vehicle_render",
+            "player_focus": "vehicle_forward_readability",
+        },
         style_tags=_unique(_base_style_tags(prompt) + ["vehicle actor", "kart"]),
-        review_checklist=list(_CONSISTENCY_REVIEW),
-        notes=["Use transparent PNG so the renderer can place the kart against multiple tracks and debug overlays."],
+        review_checklist=list(_CONSISTENCY_REVIEW) + list(_CHASE_RACER_REVIEW),
+        notes=[
+            "Use transparent PNG so the renderer can place the kart against multiple tracks and debug overlays.",
+            "The default in-world renderer assumes chase-camera-facing kart art, not a head-on portrait pose.",
+        ],
     )
 
 
@@ -437,7 +489,7 @@ def _race_common_entry(
     description: str,
     frame_count: int = 1,
 ) -> AssetPromptEntry:
-    aspect_ratio = "16:9" if "backdrop" in label else "1:1"
+    aspect_ratio = "16:9" if "backdrop" in label or "map" in label else "1:1"
     review = list(_TRACK_REVIEW if "track" in label else _CONSISTENCY_REVIEW[:2])
     prompt_template = (
         "Create a production-ready asset for a {game_type}. "
@@ -456,7 +508,7 @@ def _race_common_entry(
         "style_direction": (
             "very wide long-course environment with strong depth"
             if "track" in label
-            else "small-scale gameplay prop with high readability and consistent premium art direction"
+            else "modular gameplay prop or tile with high readability, reusable edges, and consistent premium art direction"
         ),
         "game_prompt": prompt,
     }
@@ -478,11 +530,25 @@ def _race_common_entry(
         frame_count=frame_count,
         aspect_ratio=aspect_ratio,
         transparent_background="track" not in label,
+        presentation_contract={
+            "asset_role": (
+                "track_backdrop"
+                if "track_backdrop" in label
+                else "track_map"
+                if "track_overview_map" in label
+                else "modular_track_component"
+            ),
+            "modular": "track" not in label,
+            "player_focus": "course_readability",
+        },
         style_tags=_unique(_base_style_tags(prompt) + ["race common", display_label.lower()]),
         review_checklist=review,
         notes=[
             "For track backdrops, bias toward long-course scale and a wide road impression rather than a toy-scale loop."
-        ] if "track" in label else ["Keep the item silhouette readable at small gameplay sizes."],
+        ] if "track" in label else [
+            "Keep the prop silhouette readable at small gameplay sizes.",
+            "For tiles or barriers, preserve straight edges so the runtime can repeat or place them procedurally.",
+        ],
     )
 
 
@@ -514,6 +580,7 @@ def build_asset_prompt_manifest(
     notes = [
         "This manifest is req-owned. It can borrow style direction from templates or overrides, but downstream asset consumers should only use the prompts and filenames recorded here.",
         "Override entries can add franchise-specific art direction without changing gameplay authority.",
+        "Player-facing presentation is part of the build contract: actor view, camera perspective, and modular-vs-scenic asset roles should be explicit here rather than inferred downstream.",
     ]
 
     combat_roles = list(contract.role_groups.get("combat_actor_roles") or [])
@@ -581,6 +648,11 @@ def build_asset_prompt_manifest(
                 frame_count=1,
                 aspect_ratio="16:9",
                 transparent_background=False,
+                presentation_contract={
+                    "camera_perspective": "side_view",
+                    "asset_role": "stage_background",
+                    "player_focus": "combat_lane_readability",
+                },
                 style_tags=_unique(_base_style_tags(prompt) + ["stage background", "combat"]),
                 review_checklist=list(_TRACK_REVIEW),
                 notes=["Keep the center lane readable so hitboxes, fireballs, and overlays stay easy to inspect."],
@@ -630,6 +702,33 @@ def build_asset_prompt_manifest(
     )
 
 
+def _load_asset_review(destination: Path) -> dict[str, Any]:
+    sidecar = destination / "asset_review.json"
+    if not sidecar.exists() or not sidecar.is_file():
+        return {}
+    try:
+        raw = json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _review_issues(entry: AssetPromptEntry, destination: Path) -> list[str]:
+    review = _load_asset_review(destination)
+    if not review:
+        return []
+    issues: list[str] = []
+    if review.get("runtime_approved") is False:
+        issues.append("asset exists but is not runtime-approved for player-facing presentation yet")
+    expected_perspective = str(entry.presentation_contract.get("camera_perspective", "")).strip().lower()
+    actual_perspective = str(review.get("camera_perspective", "")).strip().lower()
+    if expected_perspective and actual_perspective and expected_perspective != actual_perspective:
+        issues.append(
+            f"camera perspective mismatch: expected {expected_perspective}, review recorded {actual_perspective}"
+        )
+    return issues
+
+
 def validate_asset_workspace(manifest: AssetPromptManifest, repo_root: Path) -> AssetValidationReport:
     items: list[AssetValidationItem] = []
     blockers: list[str] = []
@@ -652,14 +751,17 @@ def validate_asset_workspace(manifest: AssetPromptManifest, repo_root: Path) -> 
             issues.append(f"destination is not a directory: {entry.destination_dir}")
         if missing:
             issues.append(f"missing {len(missing)} expected file(s)")
+        if destination.exists() and destination.is_dir():
+            issues.extend(_review_issues(entry, destination))
         if not found:
             status = "missing"
-        elif missing:
+        elif missing or any("runtime-approved" in issue or "camera perspective mismatch" in issue for issue in issues):
             status = "partial"
         else:
             status = "ready"
         if entry.required_for_ship and status != "ready":
-            blockers.append(f"{entry.label}: {', '.join(missing[:4])}")
+            detail_items = missing[:4] if missing else issues[:2]
+            blockers.append(f"{entry.label}: {', '.join(detail_items)}")
         items.append(
             AssetValidationItem(
                 asset_id=entry.id,

@@ -124,6 +124,13 @@ _BINOP_SYMBOLS = {
 _ENUM_SENTINELS = ("none", "idle", "off", "inactive", "unset", "default")
 _SCENE_EDITABLE_PROPS = frozenset({"is_ai_controlled", "is_cpu", "player_slot"})
 _VEHICLE_ROLE_TOKENS = ("kart", "vehicle", "car", "racer", "driver", "bike", "ship")
+_VEHICLE_RUNTIME_FALLBACKS = (
+    ("speed", "float", "0.0"),
+    ("facing_angle", "float", "0.0"),
+    ("brake_input", "float", "0.0"),
+    ("collision_radius", "float", "56.0"),
+    ("is_offroad", "bool", "false"),
+)
 
 
 def _native_members_for(base_node: str) -> set[str]:
@@ -187,6 +194,27 @@ def _rect_dict_to_gd(value: dict[str, Any]) -> str:
 
 def _rect_property_literal(node: PropertyNode) -> dict[str, Any] | None:
     return _rect_dict_literal(node.initial_value) or _rect_dict_literal(node.derivation)
+
+
+def _owners_match_tokens(owners: list[str], tokens: tuple[str, ...]) -> bool:
+    owner_text = " ".join(owners).lower()
+    return any(token in owner_text for token in tokens)
+
+
+def _compatibility_declarations(
+    owners: list[str],
+    godot_base_node: str,
+    local_names: set[str],
+    native_members: set[str],
+) -> list[str]:
+    declarations: list[str] = []
+    if godot_base_node == "CharacterBody2D" and _owners_match_tokens(owners, _VEHICLE_ROLE_TOKENS):
+        for prop_name, gd_type, default_expr in _VEHICLE_RUNTIME_FALLBACKS:
+            if prop_name in local_names or prop_name in native_members:
+                continue
+            local_names.add(prop_name)
+            declarations.append(f"var {prop_name}: {gd_type} = {default_expr}  # runtime compatibility")
+    return declarations
 
 
 def _declaration_line(node: PropertyNode, native_members: set[str]) -> str | None:
@@ -1561,6 +1589,7 @@ def _emit_entity_source(
     native_members = _native_members_for(godot_base_node)
     sorted_nodes = sorted(nodes, key=lambda n: (_category_priority(n), n.name))
     local_names = {node.name for node in sorted_nodes if node.name not in native_members}
+    compatibility_declarations = _compatibility_declarations(owners, godot_base_node, local_names, native_members)
     const_values = _flatten_constant_values(constants)
 
     lines: list[str] = [
@@ -1577,6 +1606,11 @@ def _emit_entity_source(
             declaration = _declaration_line(node, native_members)
             if declaration:
                 lines.append(declaration)
+        lines.append("")
+
+    if compatibility_declarations:
+        lines.append("# --- Runtime compatibility properties ---")
+        lines.extend(compatibility_declarations)
         lines.append("")
 
     if godot_base_node in {"CharacterBody2D", "Area2D"}:

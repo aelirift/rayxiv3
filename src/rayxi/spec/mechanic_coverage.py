@@ -1059,8 +1059,9 @@ def audit_build_coverage(
         elif feature.required_for_basic_play:
             issues.append("web export missing")
 
+        build_system_names = list(contract.systems) if isinstance(contract.systems, list) else list(contract.systems.keys())
         build_text = _text_blob(
-            list(contract.systems.keys())
+            build_system_names
             + list(contract.roles.keys())
             + list(contract.scenes)
             + list(contract.property_aliases.keys())

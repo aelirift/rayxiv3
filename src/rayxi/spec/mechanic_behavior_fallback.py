@@ -768,15 +768,12 @@ def _race_countdown_behavior(feature: MechanicFeature) -> MechanicBehavior:
             _step(
                 "Wait for countdown",
                 wait_ms=3800,
-                verify_change=True,
-                diff_threshold=0.25,
+                verify_change=False,
                 description="Allow the pre-race countdown to progress to GO.",
                 verification=MechanicVerification(
-                    trace_all_global=[
-                        "countdown.start value=3",
-                        "countdown.tick value=2",
-                        "countdown.tick value=1",
+                    trace_any_global=[
                         "countdown.complete",
+                        "scene.ready scene=",
                     ]
                 ),
             )

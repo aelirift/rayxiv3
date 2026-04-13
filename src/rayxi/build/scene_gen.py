@@ -622,7 +622,10 @@ func _apply_scene_defaults() -> void:
                 "                item_box.hitbox_width = 56.0",
                 '            if item_box.get("hitbox_height") != null:',
                 "                item_box.hitbox_height = 56.0",
-                "            item_box.active = true",
+                '            if item_box.get("active") != null:',
+                "                item_box.active = true",
+                '            if item_box.get("is_active") != null:',
+                "                item_box.is_active = true",
                 "            add_child(item_box)",
                 f'            entity_pools["{pickup_pool_key}"].append(item_box)',
                 f'            print("[trace] entity.spawned role={pickup_role} name=%s pos=%s" % [item_box.name, str(item_box.position)])',
@@ -679,6 +682,8 @@ var _race3d_pickup_nodes: Dictionary = {}
 var _race3d_projectile_nodes: Dictionary = {}
 var _race3d_hazard_nodes: Dictionary = {}
 var _race3d_track_signature: String = ""
+var _race3d_texture_cache: Dictionary = {}
+var _race3d_json_cache: Dictionary = {}
 var _race3d_announced: bool = false
 
 func _race_point_array(raw: Variant) -> Array:
@@ -757,6 +762,46 @@ func _race_material(color: Color, roughness: float = 0.8, metallic: float = 0.0,
         material.emission = color
         material.emission_energy_multiplier = emission_energy
     return material
+
+func _race_apply_mesh_texture(node: MeshInstance3D, texture: Texture2D, tint: Color, roughness: float = 0.8, metallic: float = 0.0, emission_energy: float = 0.0) -> void:
+    if node == null or texture == null:
+        return
+    var material := _race_material(tint, roughness, metallic, emission_energy)
+    material.albedo_texture = texture
+    material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+    node.material_override = material
+
+func _race_label_matches(file_name: String, labels: Array) -> bool:
+    var lower_name: String = file_name.to_lower()
+    for label_value in labels:
+        var label: String = str(label_value).strip_edges().to_lower()
+        if label == "":
+            continue
+        if lower_name == "%s.png" % label or lower_name == "%s.jpg" % label or lower_name == "%s.jpeg" % label:
+            return true
+        if lower_name.begins_with("%s_" % label) or lower_name.begins_with("%s-" % label):
+            return true
+    return false
+
+func _race_directory_candidates(dir_path: String, labels: Array) -> Array:
+    var matches: Array = []
+    var dir := DirAccess.open(dir_path)
+    if dir == null:
+        return matches
+    dir.list_dir_begin()
+    while true:
+        var file_name: String = dir.get_next()
+        if file_name == "":
+            break
+        if dir.current_is_dir():
+            continue
+        var lower_name: String = file_name.to_lower()
+        if not (lower_name.ends_with(".png") or lower_name.ends_with(".jpg") or lower_name.ends_with(".jpeg")):
+            continue
+        if _race_label_matches(file_name, labels):
+            matches.append("%s/%s" % [dir_path, file_name])
+    dir.list_dir_end()
+    return matches
 
 func _clear_node_children(node: Node) -> void:
     if node == null:
@@ -861,6 +906,14 @@ func _rebuild_race_3d_track() -> void:
     var span: Vector2 = bounds.get("span", Vector2(1200.0, 900.0))
     var scale: float = _race_world_scale(points)
     var lane_half_width: float = _race_lane_half_width(points)
+    var ground_texture = _race_load_texture(["common"], ["grass_ground_tile", "ground_tile", "grass_tile"])
+    var road_texture = _race_load_texture(["common"], ["road_surface_tile", "road_tile", "track_road_tile"])
+    var shoulder_texture = _race_load_texture(["common"], ["road_shoulder_tile", "shoulder_tile", "track_shoulder_tile"])
+    var barrier_texture = _race_load_texture(["common"], ["barrier_segment", "guardrail", "barrier"])
+    var sign_texture = _race_load_texture(["common"], ["direction_sign", "festival_banner", "sign"])
+    var tree_texture = _race_load_texture(["common"], ["tree_cluster", "scenery_tree", "tree"])
+    var cloud_texture = _race_load_texture(["common"], ["cloud_card", "cloud"])
+    var backdrop_texture = _race_load_texture(["common"], ["track_backdrop", "backdrop", "mountain_backdrop"])
 
     var ground := MeshInstance3D.new()
     var ground_mesh := PlaneMesh.new()
@@ -868,6 +921,8 @@ func _rebuild_race_3d_track() -> void:
     ground.mesh = ground_mesh
     ground.position = Vector3(0.0, -0.08, 0.0)
     ground.material_override = _race_material(Color(0.72, 0.78, 0.62, 1.0), 0.98, 0.0, 0.0)
+    if ground_texture != null:
+        _race_apply_mesh_texture(ground, ground_texture, Color(1.0, 1.0, 1.0, 1.0), 0.98, 0.0, 0.0)
     _race3d_track_root.add_child(ground)
 
     for idx in range(points.size()):
@@ -878,6 +933,9 @@ func _rebuild_race_3d_track() -> void:
         var segment_length: float = a3.distance_to(b3)
         if segment_length <= 0.1:
             continue
+        var tangent_2d: Vector2 = (b2 - a2).normalized()
+        var normal_2d: Vector2 = Vector2(-tangent_2d.y, tangent_2d.x)
+        var lane_offset_2d: float = lane_half_width / max(scale, 0.001)
 
         var shoulder := MeshInstance3D.new()
         var shoulder_mesh := BoxMesh.new()
@@ -885,6 +943,8 @@ func _rebuild_race_3d_track() -> void:
         shoulder.mesh = shoulder_mesh
         shoulder.position = (a3 + b3) * 0.5
         shoulder.material_override = _race_material(Color(0.98, 0.70, 0.28, 1.0), 0.84, 0.0, 0.0)
+        if shoulder_texture != null:
+            _race_apply_mesh_texture(shoulder, shoulder_texture, Color(1.0, 1.0, 1.0, 1.0), 0.84, 0.0, 0.0)
         _race3d_track_root.add_child(shoulder)
         shoulder.look_at_from_position(shoulder.position, b3, Vector3.UP)
 
@@ -894,6 +954,8 @@ func _rebuild_race_3d_track() -> void:
         road.mesh = road_mesh
         road.position = (a3 + b3) * 0.5 + Vector3(0.0, 0.10, 0.0)
         road.material_override = _race_material(Color(0.88, 0.82, 0.74, 1.0) if idx % 2 == 0 else Color(0.84, 0.78, 0.70, 1.0), 0.65, 0.02, 0.0)
+        if road_texture != null:
+            _race_apply_mesh_texture(road, road_texture, Color(1.0, 1.0, 1.0, 1.0), 0.65, 0.02, 0.0)
         _race3d_track_root.add_child(road)
         road.look_at_from_position(road.position, b3, Vector3.UP)
 
@@ -915,30 +977,61 @@ func _rebuild_race_3d_track() -> void:
         checkpoint.position = _race_world_position(a2, points, 4.4)
         checkpoint.material_override = _race_material(Color(0.22, 0.96, 0.58, 1.0), 0.28, 0.0, 1.2)
         _race3d_track_root.add_child(checkpoint)
+
+        if barrier_texture != null:
+            var barrier_size: Vector2 = _race_billboard_size(barrier_texture, 10.0, 4.4, 4.2, 2.0)
+            for side in [-1.0, 1.0]:
+                var barrier := _race_billboard(barrier_texture, barrier_size, barrier_size.y * 0.48)
+                barrier.position = _race_world_position(a2 + normal_2d * lane_offset_2d * 1.45 * side, points, barrier_size.y * 0.48)
+                _race3d_scenery_root.add_child(barrier)
+
+        if sign_texture != null and idx % 2 == 0:
+            var sign_size: Vector2 = _race_billboard_size(sign_texture, 8.0, 5.4, 3.8, 2.6)
+            var sign := _race_billboard(sign_texture, sign_size, sign_size.y * 0.54)
+            sign.position = _race_world_position(a2 + normal_2d * lane_offset_2d * 1.95, points, sign_size.y * 0.54)
+            _race3d_scenery_root.add_child(sign)
     var center: Vector2 = bounds.get("center", Vector2.ZERO)
     var radius: float = float(bounds.get("radius", 780.0))
     for idx in range(6):
         var theta: float = TAU * float(idx) / 6.0
-        var mountain := MeshInstance3D.new()
-        var mountain_mesh := CylinderMesh.new()
-        mountain_mesh.top_radius = 0.0
-        mountain_mesh.bottom_radius = max(radius * scale * (0.20 + float(idx % 2) * 0.04), 12.0)
-        mountain_mesh.height = 28.0 + float(idx % 3) * 7.0
-        mountain.mesh = mountain_mesh
-        mountain.position = _race_world_position(center + Vector2(cos(theta), sin(theta)) * radius * 1.9, points, mountain_mesh.height * 0.5 - 0.2)
-        mountain.material_override = _race_material(Color(0.48, 0.60, 0.72, 1.0), 0.94, 0.0, 0.0)
-        _race3d_scenery_root.add_child(mountain)
+        if tree_texture != null:
+            var tree_size: Vector2 = _race_billboard_size(tree_texture, 12.0, 11.0, 5.5, 5.0)
+            var tree := _race_billboard(tree_texture, tree_size, tree_size.y * 0.52)
+            tree.position = _race_world_position(center + Vector2(cos(theta), sin(theta)) * radius * 1.7, points, tree_size.y * 0.52)
+            _race3d_scenery_root.add_child(tree)
+        else:
+            var mountain := MeshInstance3D.new()
+            var mountain_mesh := CylinderMesh.new()
+            mountain_mesh.top_radius = 0.0
+            mountain_mesh.bottom_radius = max(radius * scale * (0.20 + float(idx % 2) * 0.04), 12.0)
+            mountain_mesh.height = 28.0 + float(idx % 3) * 7.0
+            mountain.mesh = mountain_mesh
+            mountain.position = _race_world_position(center + Vector2(cos(theta), sin(theta)) * radius * 1.9, points, mountain_mesh.height * 0.5 - 0.2)
+            mountain.material_override = _race_material(Color(0.48, 0.60, 0.72, 1.0), 0.94, 0.0, 0.0)
+            _race3d_scenery_root.add_child(mountain)
 
     for idx in range(4):
-        var cloud := MeshInstance3D.new()
-        var cloud_mesh := SphereMesh.new()
-        cloud_mesh.radius = 6.0 + float(idx % 2) * 2.4
-        cloud_mesh.height = cloud_mesh.radius * 2.0
-        cloud.mesh = cloud_mesh
         var offset_angle: float = TAU * float(idx) / 4.0
-        cloud.position = Vector3(cos(offset_angle) * 80.0, 34.0 + float(idx) * 2.5, sin(offset_angle) * 54.0)
-        cloud.material_override = _race_material(Color(1.0, 1.0, 1.0, 0.95), 0.92, 0.0, 0.15)
-        _race3d_scenery_root.add_child(cloud)
+        if cloud_texture != null:
+            var cloud_size: Vector2 = _race_billboard_size(cloud_texture, 26.0, 14.0, 14.0, 7.0)
+            var cloud := _race_billboard(cloud_texture, cloud_size, cloud_size.y * 0.5)
+            cloud.position = Vector3(cos(offset_angle) * 92.0, 34.0 + float(idx) * 2.5, sin(offset_angle) * 54.0)
+            _race3d_scenery_root.add_child(cloud)
+        else:
+            var cloud := MeshInstance3D.new()
+            var cloud_mesh := SphereMesh.new()
+            cloud_mesh.radius = 6.0 + float(idx % 2) * 2.4
+            cloud_mesh.height = cloud_mesh.radius * 2.0
+            cloud.mesh = cloud_mesh
+            cloud.position = Vector3(cos(offset_angle) * 80.0, 34.0 + float(idx) * 2.5, sin(offset_angle) * 54.0)
+            cloud.material_override = _race_material(Color(1.0, 1.0, 1.0, 0.95), 0.92, 0.0, 0.15)
+            _race3d_scenery_root.add_child(cloud)
+
+    if backdrop_texture != null:
+        var backdrop_size: Vector2 = _race_billboard_size(backdrop_texture, max(span.x * scale * 2.8, 220.0), 120.0, 120.0, 60.0)
+        var backdrop := _race_billboard(backdrop_texture, backdrop_size, backdrop_size.y * 0.5)
+        backdrop.position = Vector3(0.0, backdrop_size.y * 0.52, -max(span.y * scale * 1.45, 180.0))
+        _race3d_scenery_root.add_child(backdrop)
 
 func _race_entity_color(entity, primary: Color, secondary: Color) -> Color:
     if entity == null:
@@ -949,8 +1042,182 @@ func _race_entity_color(entity, primary: Color, secondary: Color) -> Color:
     var slot: int = int(entity.get("player_slot") if entity.get("player_slot") != null else 0)
     return primary if slot <= 0 else secondary
 
+func _race_entity_active(entity) -> bool:
+    if entity == null:
+        return false
+    var raw: Variant = entity.get("active")
+    if raw == null:
+        raw = entity.get("is_active")
+    return false if raw == null else bool(raw)
+
+func _race_texture_candidates(prefixes: Array, labels: Array) -> Array:
+    var candidates: Array = []
+    for prefix_value in prefixes:
+        var prefix: String = str(prefix_value).strip_edges()
+        if prefix == "":
+            continue
+        var dir_path: String = "res://assets/%s" % prefix
+        var prefix_basename: String = prefix.get_file()
+        for label_value in labels:
+            var label: String = str(label_value).strip_edges()
+            if label == "":
+                continue
+            candidates.append("res://assets/%s/%s.png" % [prefix, label])
+            candidates.append("res://assets/%s/%s.jpg" % [prefix, label])
+            candidates.append("res://assets/%s/%s.jpeg" % [prefix, label])
+            if prefix_basename != "":
+                candidates.append("res://assets/%s/%s_%s.png" % [prefix, prefix_basename, label])
+                candidates.append("res://assets/%s/%s_%s.jpg" % [prefix, prefix_basename, label])
+                candidates.append("res://assets/%s/%s_%s.jpeg" % [prefix, prefix_basename, label])
+        candidates.append_array(_race_directory_candidates(dir_path, labels))
+    return candidates
+
+func _race_load_texture(prefixes: Array, labels: Array):
+    var cache_key: String = "%s|%s" % [str(prefixes), str(labels)]
+    if _race3d_texture_cache.has(cache_key):
+        var cached: Variant = _race3d_texture_cache.get(cache_key)
+        return cached if cached is Texture2D else null
+    for candidate in _race_texture_candidates(prefixes, labels):
+        if not ResourceLoader.exists(candidate):
+            continue
+        var loaded: Variant = load(candidate)
+        if loaded is Texture2D:
+            _race3d_texture_cache[cache_key] = loaded
+            return loaded
+    _race3d_texture_cache[cache_key] = false
+    return null
+
+func _race_load_json_dict(res_path: String) -> Dictionary:
+    if _race3d_json_cache.has(res_path):
+        var cached: Variant = _race3d_json_cache.get(res_path, {})
+        return cached if cached is Dictionary else {}
+    if not FileAccess.file_exists(res_path):
+        _race3d_json_cache[res_path] = {}
+        return {}
+    var text: String = FileAccess.get_file_as_string(res_path)
+    if text.strip_edges() == "":
+        _race3d_json_cache[res_path] = {}
+        return {}
+    var parsed: Variant = JSON.parse_string(text)
+    if parsed is Dictionary:
+        _race3d_json_cache[res_path] = parsed
+        return parsed
+    _race3d_json_cache[res_path] = {}
+    return {}
+
+func _race_actor_texture_permitted(entity) -> bool:
+    if entity == null:
+        return true
+    var actor_prefix: String = str(entity.get("visual_asset_prefix") if entity.get("visual_asset_prefix") != null else "").strip_edges()
+    if actor_prefix == "":
+        return true
+    var review: Dictionary = _race_load_json_dict("res://assets/%s/asset_review.json" % actor_prefix)
+    if review.is_empty():
+        return true
+    if review.has("runtime_approved") and not bool(review.get("runtime_approved", true)):
+        return false
+    var perspective: String = str(review.get("camera_perspective", "")).strip_edges().to_lower()
+    if perspective == "":
+        return true
+    return perspective in ["chase_rear", "rear_chase", "third_person_chase", "third_person_chase_rear"]
+
+func _race_sprite_plane(texture: Texture2D, size: Vector2, lift: float, billboard_mode: int = BaseMaterial3D.BILLBOARD_DISABLED) -> MeshInstance3D:
+    var quad := MeshInstance3D.new()
+    quad.name = "Billboard"
+    var mesh := QuadMesh.new()
+    mesh.size = size
+    quad.mesh = mesh
+    quad.position = Vector3(0.0, lift, 0.0)
+    var material := StandardMaterial3D.new()
+    material.albedo_texture = texture
+    material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+    material.billboard_mode = billboard_mode
+    material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    material.cull_mode = BaseMaterial3D.CULL_DISABLED
+    quad.material_override = material
+    return quad
+
+func _race_billboard(texture: Texture2D, size: Vector2, lift: float) -> MeshInstance3D:
+    return _race_sprite_plane(texture, size, lift, BaseMaterial3D.BILLBOARD_FIXED_Y)
+
+func _race_actor_plane(texture: Texture2D, size: Vector2, lift: float) -> MeshInstance3D:
+    var quad := _race_sprite_plane(texture, size, lift, BaseMaterial3D.BILLBOARD_DISABLED)
+    quad.rotation.y = PI
+    return quad
+
+func _race_billboard_size(texture: Texture2D, max_width: float, max_height: float, min_width: float = 1.0, min_height: float = 1.0) -> Vector2:
+    if texture == null:
+        return Vector2(max_width, max_height)
+    var texture_size: Vector2 = texture.get_size()
+    if texture_size.x <= 0.0 or texture_size.y <= 0.0:
+        return Vector2(max_width, max_height)
+    var aspect: float = texture_size.x / texture_size.y
+    var width: float = max_width
+    var height: float = width / max(aspect, 0.01)
+    if height > max_height:
+        height = max_height
+        width = height * aspect
+    return Vector2(clampf(width, min_width, max_width), clampf(height, min_height, max_height))
+
+func _race_actor_visual_state(entity) -> String:
+    if entity == null:
+        return "idle"
+    var boost_timer: float = float(entity.get("boost_timer") if entity.get("boost_timer") != null else 0.0)
+    var boost_multiplier: float = float(entity.get("boost_multiplier") if entity.get("boost_multiplier") != null else 1.0)
+    var steer_input: float = float(entity.get("steer_input") if entity.get("steer_input") != null else 0.0)
+    var speed: float = absf(float(entity.get("speed") if entity.get("speed") != null else 0.0))
+    if boost_timer > 0.05 or boost_multiplier > 1.05:
+        return "boost"
+    if speed > 4.0:
+        if steer_input <= -0.12:
+            return "turn_left"
+        if steer_input >= 0.12:
+            return "turn_right"
+    return "idle"
+
+func _race_actor_texture_labels(state: String) -> Array:
+    if state == "boost":
+        return ["kart_boost", "kart_idle", "driver_portrait"]
+    if state == "turn_left":
+        return ["kart_turn_left", "kart_idle", "driver_portrait"]
+    if state == "turn_right":
+        return ["kart_turn_right", "kart_idle", "driver_portrait"]
+    return ["kart_idle", "driver_portrait"]
+
+func _race_apply_actor_texture(root: Node3D, entity) -> void:
+    if root == null or entity == null:
+        return
+    if not _race_actor_texture_permitted(entity):
+        return
+    var billboard: Variant = root.get_node_or_null("Billboard")
+    if not (billboard is MeshInstance3D):
+        return
+    var state: String = _race_actor_visual_state(entity)
+    if str(root.get_meta("rayxi_actor_state", "")) == state:
+        return
+    var actor_prefix: String = str(entity.get("visual_asset_prefix") if entity.get("visual_asset_prefix") != null else "")
+    var actor_texture = _race_load_texture([actor_prefix], _race_actor_texture_labels(state))
+    if actor_texture == null:
+        return
+    var billboard_mesh: Variant = (billboard as MeshInstance3D).mesh
+    if billboard_mesh is QuadMesh:
+        (billboard_mesh as QuadMesh).size = _race_billboard_size(actor_texture, 4.2, 3.2, 2.0, 1.8)
+    var material: Variant = (billboard as MeshInstance3D).material_override
+    if material is StandardMaterial3D:
+        (material as StandardMaterial3D).albedo_texture = actor_texture
+    var texture_size: Vector2 = _race_billboard_size(actor_texture, 4.2, 3.2, 2.0, 1.8)
+    (billboard as MeshInstance3D).position = Vector3(0.0, texture_size.y * 0.52, 0.0)
+    root.set_meta("rayxi_actor_state", state)
+
 func _make_race_actor_visual(entity) -> Node3D:
     var root := Node3D.new()
+    var actor_prefix: String = str(entity.get("visual_asset_prefix") if entity != null and entity.get("visual_asset_prefix") != null else "")
+    var actor_texture = _race_load_texture([actor_prefix], _race_actor_texture_labels("idle")) if _race_actor_texture_permitted(entity) else null
+    if actor_texture != null:
+        var billboard_size: Vector2 = _race_billboard_size(actor_texture, 4.2, 3.2, 2.0, 1.8)
+        root.add_child(_race_actor_plane(actor_texture, billboard_size, billboard_size.y * 0.52))
+        root.set_meta("rayxi_actor_state", "idle")
+        return root
     var body_color: Color = _race_entity_color(entity, Color(0.95, 0.78, 0.18, 1.0), Color(0.28, 0.78, 1.0, 1.0))
     var trim_color: Color = Color(0.94, 0.26, 0.18, 1.0) if not _entity_is_ai(entity) else Color(0.98, 0.88, 0.92, 1.0)
 
@@ -986,6 +1253,11 @@ func _make_race_actor_visual(entity) -> Node3D:
 
 func _make_race_pickup_visual() -> Node3D:
     var root := Node3D.new()
+    var pickup_texture = _race_load_texture(["common"], ["item_box", "boost_item"])
+    if pickup_texture != null:
+        var billboard_size: Vector2 = _race_billboard_size(pickup_texture, 3.0, 3.0, 1.6, 1.6)
+        root.add_child(_race_billboard(pickup_texture, billboard_size, billboard_size.y * 0.5))
+        return root
     var cube := MeshInstance3D.new()
     var mesh := BoxMesh.new()
     mesh.size = Vector3(2.4, 2.4, 2.4)
@@ -1004,6 +1276,11 @@ func _make_race_pickup_visual() -> Node3D:
 
 func _make_race_projectile_visual() -> Node3D:
     var root := Node3D.new()
+    var projectile_texture = _race_load_texture(["common"], ["shell_projectile", "projectile"])
+    if projectile_texture != null:
+        var billboard_size: Vector2 = _race_billboard_size(projectile_texture, 2.2, 2.2, 1.0, 1.0)
+        root.add_child(_race_billboard(projectile_texture, billboard_size, billboard_size.y * 0.5))
+        return root
     var orb := MeshInstance3D.new()
     var mesh := SphereMesh.new()
     mesh.radius = 0.9
@@ -1016,6 +1293,11 @@ func _make_race_projectile_visual() -> Node3D:
 
 func _make_race_hazard_visual() -> Node3D:
     var root := Node3D.new()
+    var hazard_texture = _race_load_texture(["common"], ["banana_hazard", "hazard"])
+    if hazard_texture != null:
+        var billboard_size: Vector2 = _race_billboard_size(hazard_texture, 2.6, 2.6, 1.2, 1.2)
+        root.add_child(_race_billboard(hazard_texture, billboard_size, billboard_size.y * 0.5))
+        return root
     var mesh_instance := MeshInstance3D.new()
     var mesh := CylinderMesh.new()
     mesh.top_radius = 1.2
@@ -1052,15 +1334,16 @@ func _sync_race_3d_actor_nodes(points: Array) -> void:
             visual = _make_race_actor_visual(actor)
             _race3d_actor_nodes[key] = visual
             _race3d_actor_root.add_child(visual)
+        _race_apply_actor_texture(visual, actor)
         visual.position = _race_world_position(Vector2(float(actor.position.x), float(actor.position.y)), points, 0.2)
-        var velocity_2d: Vector2 = actor.get("velocity") if actor.get("velocity") is Vector2 else Vector2.ZERO
-        var forward_2d: Vector2 = velocity_2d.normalized()
+        var angle_value: Variant = actor.get("facing_angle")
+        if angle_value == null:
+            angle_value = actor.get("angle")
+        var angle_rad: float = deg_to_rad(float(angle_value if angle_value != null else 0.0))
+        var forward_2d: Vector2 = Vector2(cos(angle_rad), sin(angle_rad))
         if forward_2d.length() <= 0.01:
-            var angle_value: Variant = actor.get("facing_angle")
-            if angle_value == null:
-                angle_value = actor.get("angle")
-            var angle_rad: float = deg_to_rad(float(angle_value if angle_value != null else 0.0))
-            forward_2d = Vector2(cos(angle_rad), sin(angle_rad))
+            var velocity_2d: Vector2 = actor.get("velocity") if actor.get("velocity") is Vector2 else Vector2.ZERO
+            forward_2d = velocity_2d.normalized()
         visual.rotation.y = atan2(forward_2d.x, -forward_2d.y)
     _prune_race_3d_cache(_race3d_actor_nodes, seen)
 
@@ -1074,7 +1357,7 @@ func _sync_race_3d_pickup_nodes(points: Array) -> void:
         var raw_pool: Variant = entity_pools.get(pool_name, [])
         if raw_pool is Array and not (raw_pool as Array).is_empty():
             for pickup in raw_pool:
-                if pickup == null or not bool(pickup.get("active")):
+                if pickup == null or not _race_entity_active(pickup):
                     continue
                 source_points.append({"key": str(pickup.get_instance_id()), "point": Vector2(float(pickup.position.x), float(pickup.position.y))})
     if source_points.is_empty():
@@ -1105,7 +1388,7 @@ func _sync_race_3d_projectile_nodes(points: Array) -> void:
     var raw_pool: Variant = entity_pools.get(pool_name, [])
     if raw_pool is Array:
         for projectile in raw_pool:
-            if projectile == null or not bool(projectile.get("active")):
+            if projectile == null or not _race_entity_active(projectile):
                 continue
             var key: String = str(projectile.get_instance_id())
             seen[key] = true
@@ -1129,7 +1412,7 @@ func _sync_race_3d_hazard_nodes(points: Array) -> void:
     var raw_pool: Variant = entity_pools.get(pool_name, [])
     if raw_pool is Array:
         for hazard in raw_pool:
-            if hazard == null or not bool(hazard.get("active")):
+            if hazard == null or not _race_entity_active(hazard):
                 continue
             var key: String = str(hazard.get_instance_id())
             seen[key] = true
@@ -1151,14 +1434,14 @@ func _sync_race_3d_camera(points: Array) -> void:
     if player == null:
         return
     var player_pos_2d := Vector2(float(player.position.x), float(player.position.y))
-    var velocity_2d: Vector2 = player.get("velocity") if player.get("velocity") is Vector2 else Vector2.ZERO
-    var forward_2d: Vector2 = velocity_2d.normalized()
+    var angle_value: Variant = player.get("facing_angle")
+    if angle_value == null:
+        angle_value = player.get("angle")
+    var angle_rad: float = deg_to_rad(float(angle_value if angle_value != null else 0.0))
+    var forward_2d: Vector2 = Vector2(cos(angle_rad), sin(angle_rad))
     if forward_2d.length() <= 0.01:
-        var angle_value: Variant = player.get("facing_angle")
-        if angle_value == null:
-            angle_value = player.get("angle")
-        var angle_rad: float = deg_to_rad(float(angle_value if angle_value != null else 0.0))
-        forward_2d = Vector2(cos(angle_rad), sin(angle_rad))
+        var velocity_2d: Vector2 = player.get("velocity") if player.get("velocity") is Vector2 else Vector2.ZERO
+        forward_2d = velocity_2d.normalized()
     var forward: Vector3 = Vector3(forward_2d.x, 0.0, -forward_2d.y).normalized()
     if forward.length() <= 0.01:
         forward = Vector3(1.0, 0.0, 0.0)
@@ -1423,8 +1706,6 @@ func _apply_test_mode_overrides() -> void:
                     p1.accel_input = 1.0
                 if p1.get("input_accelerate") != null:
                     p1.input_accelerate = true
-            if p1.get("facing_angle") != null:
-                p1.facing_angle = 0.0
             if p1.get("current_item") != null:
                 p1.current_item = "green_shell" if rayxi_test_mode == "item_ready" else ""
             if p1.get("held_item") != null:
@@ -1447,8 +1728,8 @@ func _apply_test_mode_overrides() -> void:
                 p2.velocity = Vector2.ZERO
             if p2.get("speed") != null:
                 p2.speed = 0.0
-            if p2.get("facing_angle") != null:
-                p2.facing_angle = 180.0 if rayxi_test_mode == "collision_ready" else 0.0
+            if p2.get("facing_angle") != null and rayxi_test_mode == "collision_ready":
+                p2.facing_angle = p1.facing_angle + PI if p1 != null and p1.get("facing_angle") != null else PI
             if p2.get("is_ai_controlled") != null:
                 p2.is_ai_controlled = true
             if p2.get("current_item") != null:

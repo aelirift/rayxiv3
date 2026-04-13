@@ -813,6 +813,41 @@ func _race_manager():
 \tvar managers: Array = entity_pools.get("race_managers", [])
 \treturn managers[0] if not managers.is_empty() else null
 """.strip(),
+            """
+func _heading_from_kart(kart) -> Vector2:
+\tvar angle_value: float = float(_entity_value(kart, "facing_angle", 0.0))
+\tvar radians: float = deg_to_rad(angle_value) if absf(angle_value) > TAU * 2.0 else angle_value
+\tvar heading: Vector2 = Vector2(cos(radians), sin(radians))
+\treturn heading.normalized() if heading.length() > 0.01 else Vector2.RIGHT
+""".strip(),
+            """
+func _starting_waypoint_index(kart, checkpoints: Array[Vector2]) -> int:
+\tif kart == null or checkpoints.is_empty():
+\t\treturn 0
+\tvar kart_pos: Variant = _entity_value(kart, "position", null)
+\tif not (kart_pos is Vector2):
+\t\treturn 0
+\tvar forward: Vector2 = _heading_from_kart(kart)
+\tvar best_index: int = 0
+\tvar best_score: float = 1e18
+\tvar ahead_found: bool = false
+\tfor idx in range(checkpoints.size()):
+\t\tvar checkpoint: Vector2 = checkpoints[idx]
+\t\tvar delta: Vector2 = checkpoint - (kart_pos as Vector2)
+\t\tvar along: float = delta.dot(forward)
+\t\tvar distance: float = delta.length()
+\t\tvar is_ahead: bool = along >= -self.checkpoint_radius * 0.25
+\t\tvar score: float = distance - max(along, 0.0) * 0.25
+\t\tif is_ahead:
+\t\t\tif (not ahead_found) or score < best_score:
+\t\t\t\tahead_found = true
+\t\t\t\tbest_score = score
+\t\t\t\tbest_index = idx
+\t\telif not ahead_found and distance < best_score:
+\t\t\tbest_score = distance
+\t\t\tbest_index = idx
+\treturn best_index
+""".strip(),
         ],
         process_body=[
             "\tvar race_manager = _race_manager()",
@@ -902,13 +937,15 @@ func _race_manager():
             "\t_countdown_started = false",
             "\t_countdown_value = 0",
             "\t_countdown_timer = 0.0",
+            "\tvar checkpoints: Array[Vector2] = _checkpoint_points()",
             "\tfor kart in karts:",
             "\t\tif kart == null:",
             "\t\t\tcontinue",
-            "\t\tkart.waypoint_index = 0",
+            "\t\tkart.waypoint_index = _starting_waypoint_index(kart, checkpoints)",
             "\t\tkart.current_lap = 1",
             "\t\tkart.race_position = 1",
             "\t\tkart.race_finished = false",
+            '\t\tprint("[trace] race_progress.seed_waypoint kart=%s waypoint=%d" % [kart.name, int(kart.waypoint_index)])',
             "\tvar race_manager = _race_manager()",
             "\tif race_manager != null:",
             '\t\trace_manager.current_state = "countdown"',
@@ -993,6 +1030,8 @@ def _specialized_vehicle_movement_system(
     friction_default = float(_constant_scalar(constants, ("friction_coefficient", "rolling_friction"), 0.92))
     offroad_default = float(_constant_scalar(constants, ("offroad_speed_multiplier",), 0.6))
     min_steer_default = float(_constant_scalar(constants, ("minimum_steering_speed", "min_steering_speed"), 6.0))
+    reverse_speed_default = float(_constant_scalar(constants, ("reverse_speed_multiplier",), 0.42))
+    reverse_accel_default = float(_constant_scalar(constants, ("reverse_acceleration_rate",), acceleration_rate * 0.85))
     extra_fields = ["var _last_trace_state: Dictionary = {}"]
     if "braking_deceleration" not in constants:
         extra_fields.append(f"@export var braking_deceleration: float = {braking_default}")
@@ -1008,6 +1047,10 @@ def _specialized_vehicle_movement_system(
         extra_fields.append(f"@export var friction_coefficient: float = {friction_default}")
     if "offroad_speed_multiplier" not in constants:
         extra_fields.append(f"@export var offroad_speed_multiplier: float = {offroad_default}")
+    if "reverse_speed_multiplier" not in constants:
+        extra_fields.append(f"@export var reverse_speed_multiplier: float = {reverse_speed_default}")
+    if "reverse_acceleration_rate" not in constants:
+        extra_fields.append(f"@export var reverse_acceleration_rate: float = {reverse_accel_default}")
     return _specialized_system_source(
         system_name,
         reads,
@@ -1156,7 +1199,7 @@ func _trace_state(kart, speed: float, max_speed: float, position: Vector2) -> vo
             "\tfor kart in karts:",
             "\t\tif kart == null:",
             "\t\t\tcontinue",
-            '\t\tvar speed: float = max(float(_entity_value(kart, SPEED_PROP, 0.0)), 0.0)',
+            '\t\tvar speed: float = float(_entity_value(kart, SPEED_PROP, 0.0))',
             '\t\tvar accel_input: float = clampf(float(_entity_value(kart, ACCEL_PROP, 0.0)), 0.0, 1.0)',
             '\t\tvar brake_input: float = clampf(float(_entity_value(kart, BRAKE_PROP, 0.0)), 0.0, 1.0)',
             '\t\tvar steer_input: float = clampf(float(_entity_value(kart, STEER_PROP, 0.0)), -1.0, 1.0)',
@@ -1173,21 +1216,30 @@ func _trace_state(kart, speed: float, max_speed: float, position: Vector2) -> vo
             "\t\t\tmax_speed_cap *= self.offroad_speed_multiplier",
             "\t\tif boost_timer > 0.0:",
             "\t\t\tmax_speed_cap *= boost_multiplier",
+            '\t\tvar reverse_speed_cap: float = max(max_speed_cap * self.reverse_speed_multiplier, self.minimum_steering_speed * 1.5)',
             "\t\tif gameplay_locked:",
             "\t\t\tspeed = 0.0",
             "\t\telif spinning_out:",
-            "\t\t\tspeed = max(speed - self.braking_deceleration * 0.6 * _delta, 0.0)",
+            "\t\t\tspeed = move_toward(speed, 0.0, self.braking_deceleration * 0.6 * _delta)",
             "\t\t\tspin_timer = max(spin_timer - _delta, 0.0)",
             "\t\t\tif spin_timer <= 0.0:",
             '\t\t\t\t_set_prop(kart, SPINNING_PROP, false)',
             "\t\telse:",
-            "\t\t\tspeed += accel_input * self.acceleration_rate * _delta",
-            "\t\t\tspeed = max(speed - brake_input * self.braking_deceleration * _delta, 0.0)",
+            "\t\t\tif accel_input > 0.01:",
+            "\t\t\t\tif speed < 0.0:",
+            "\t\t\t\t\tspeed = min(speed + self.braking_deceleration * _delta, 0.0)",
+            "\t\t\t\tspeed += accel_input * self.acceleration_rate * _delta",
+            "\t\t\tif brake_input > 0.01:",
+            "\t\t\t\tif speed > self.minimum_steering_speed:",
+            "\t\t\t\t\tspeed = max(speed - brake_input * self.braking_deceleration * _delta, 0.0)",
+            "\t\t\t\telse:",
+            "\t\t\t\t\tspeed -= brake_input * self.reverse_acceleration_rate * _delta",
             "\t\t\tif accel_input <= 0.01 and brake_input <= 0.01:",
-            "\t\t\t\tspeed *= max(1.0 - (self.friction_coefficient * step_scale), 0.0)",
-            "\t\t\tspeed = clampf(speed, 0.0, max_speed_cap)",
-            '\t\t\tif speed >= self.minimum_steering_speed and absf(steer_input) > 0.01:',
-            '\t\t\t\tangle_value += steer_input * self.turn_rate_base * _delta',
+            "\t\t\t\tspeed = move_toward(speed, 0.0, max(absf(speed) * self.friction_coefficient * _delta, 0.05))",
+            "\t\t\tspeed = clampf(speed, -reverse_speed_cap, max_speed_cap)",
+            '\t\t\tif absf(speed) >= self.minimum_steering_speed and absf(steer_input) > 0.01:',
+            '\t\t\t\tvar steering_sign: float = 1.0 if speed >= 0.0 else -1.0',
+            '\t\t\t\tangle_value += steer_input * steering_sign * self.turn_rate_base * _delta',
             '\t\t\t\tprint("[trace] physics.turn kart=%s angle=%.2f steer=%.2f speed=%.2f" % [kart.name, angle_value, steer_input, speed])',
             '\t\tvar heading: Vector2 = _heading(angle_value)',
             '\t\tvar velocity: Vector2 = heading * speed',
@@ -1509,6 +1561,28 @@ func _set_prop(obj, prop_name: String, value) -> void:
 \tobj.set(prop_name, value)
 """.strip(),
             """
+func _entity_active(obj, primary_prop: String) -> bool:
+\tif obj == null:
+\t\treturn false
+\tvar raw = obj.get(primary_prop)
+\tif raw == null and primary_prop != "active":
+\t\traw = obj.get("active")
+\tif raw == null and primary_prop != "is_active":
+\t\traw = obj.get("is_active")
+\treturn false if raw == null else bool(raw)
+""".strip(),
+            """
+func _set_active_like(obj, primary_prop: String, value: bool) -> void:
+\tif obj == null:
+\t\treturn
+\tif primary_prop != "":
+\t\tobj.set(primary_prop, value)
+\tif primary_prop != "active" and obj.get("active") != null:
+\t\tobj.set("active", value)
+\tif primary_prop != "is_active" and obj.get("is_active") != null:
+\t\tobj.set("is_active", value)
+""".strip(),
+            """
 func _ensure_pool(pool_name: String) -> Array:
 \tif not entity_pools.has(pool_name):
 \t\tentity_pools[pool_name] = []
@@ -1516,6 +1590,8 @@ func _ensure_pool(pool_name: String) -> Array:
 """.strip(),
             """
 func _spawn_entity(script_path: String, pool_name: String, base_name: String):
+\tif not ResourceLoader.exists(script_path):
+\t\treturn null
 \tvar script_res = load(script_path)
 \tif script_res == null:
 \t\treturn null
@@ -1531,7 +1607,7 @@ func _spawn_entity(script_path: String, pool_name: String, base_name: String):
             """
 func _first_inactive(pool_name: String, active_prop: String, script_path: String, base_name: String):
 \tfor entity in _ensure_pool(pool_name):
-\t\tif entity != null and not bool(_entity_value(entity, active_prop, false)):
+\t\tif entity != null and not _entity_active(entity, active_prop):
 \t\t\treturn entity
 \treturn _spawn_entity(script_path, pool_name, base_name)
 """.strip(),
@@ -1548,58 +1624,62 @@ func _item_for_rank(rank: int) -> String:
 \treturn "boost"
 """.strip(),
             f"""
-func _spawn_projectile(actor) -> void:
+func _spawn_projectile(actor) -> bool:
 \tvar projectile = _first_inactive("{projectile_pool}", PROJECTILE_ACTIVE_PROP, "res://scripts/entities/{projectile_owner}.gd", "{projectile_owner}")
 \tif projectile == null:
-\t\treturn
+\t\treturn false
 \tvar angle: float = float(_entity_value(actor, ANGLE_PROP, 0.0))
 \tvar forward: Vector2 = _forward(angle)
 \tprojectile.position = actor.position + forward * 84.0
 \tprojectile.rotation = angle
-\t_set_prop(projectile, PROJECTILE_ACTIVE_PROP, true)
+\t_set_active_like(projectile, PROJECTILE_ACTIVE_PROP, true)
 \tif PROJECTILE_OWNER_PROP != "":
 \t\t_set_prop(projectile, PROJECTILE_OWNER_PROP, int(_entity_value(actor, ACTOR_ID_PROP, 0)))
 \tprint("[trace] item.spawn_projectile actor=%s pos=%s" % [actor.name, str(projectile.position)])
+\treturn true
 """.strip(),
             f"""
-func _spawn_trap(actor) -> void:
+func _spawn_trap(actor) -> bool:
 \tvar trap = _first_inactive("{trap_pool}", TRAP_ACTIVE_PROP, "res://scripts/entities/{trap_owner}.gd", "{trap_owner}")
 \tif trap == null:
-\t\treturn
+\t\tprint("[trace] item.spawn_trap_missing actor=%s pool=%s" % [actor.name, "{trap_pool}"])
+\t\treturn false
 \tvar angle: float = float(_entity_value(actor, ANGLE_PROP, 0.0))
 \tvar forward: Vector2 = _forward(angle)
 \ttrap.position = actor.position - forward * 72.0
-\t_set_prop(trap, TRAP_ACTIVE_PROP, true)
+\t_set_active_like(trap, TRAP_ACTIVE_PROP, true)
 \tprint("[trace] item.spawn_trap actor=%s pos=%s" % [actor.name, str(trap.position)])
+\treturn true
 """.strip(),
             """
 func _apply_item(actor, item_name: String) -> void:
 \tvar lower_name := item_name.to_lower()
 \tif lower_name.find("projectile") >= 0 or lower_name.find("shell") >= 0:
-\t\t_spawn_projectile(actor)
+\t\tif _spawn_projectile(actor):
+\t\t\treturn
 \telif lower_name.find("trap") >= 0 or lower_name.find("banana") >= 0 or lower_name.find("peel") >= 0:
-\t\t_spawn_trap(actor)
+\t\tif _spawn_trap(actor):
+\t\t\treturn
 \telif lower_name.find("star") >= 0 or lower_name.find("invinc") >= 0 or lower_name.find("shield") >= 0:
 \t\t_set_prop(actor, INVULN_PROP, self.""" + invuln_duration_field + """)
 \t\tprint("[trace] item.invulnerability_start actor=%s duration=%.2f" % [actor.name, self.""" + invuln_duration_field + """])
-\telse:
-\t\tvar boost_timer: float = max(float(_entity_value(actor, BOOST_TIMER_PROP, 0.0)), 0.0)
-\t\t_set_prop(actor, BOOST_TIMER_PROP, max(boost_timer, self.""" + boost_duration_field + """))
-\t\t_set_prop(actor, BOOST_MULT_PROP, max(float(_entity_value(actor, BOOST_MULT_PROP, 1.0)), self.""" + boost_multiplier_field + """))
-\t\tprint("[trace] item.boost_start actor=%s duration=%.2f multiplier=%.2f" % [actor.name, self.""" + boost_duration_field + """, self.""" + boost_multiplier_field + """])
+\tvar boost_timer: float = max(float(_entity_value(actor, BOOST_TIMER_PROP, 0.0)), 0.0)
+\t_set_prop(actor, BOOST_TIMER_PROP, max(boost_timer, self.""" + boost_duration_field + """))
+\t_set_prop(actor, BOOST_MULT_PROP, max(float(_entity_value(actor, BOOST_MULT_PROP, 1.0)), self.""" + boost_multiplier_field + """))
+\tprint("[trace] item.boost_start actor=%s duration=%.2f multiplier=%.2f" % [actor.name, self.""" + boost_duration_field + """, self.""" + boost_multiplier_field + """])
 """.strip(),
             """
 func process_overlap_event(actor, pickup) -> void:
 \tif actor == null or pickup == null:
 \t\treturn
-\tif not bool(_entity_value(pickup, PICKUP_ACTIVE_PROP, false)):
+\tif not _entity_active(pickup, PICKUP_ACTIVE_PROP):
 \t\treturn
 \tif str(_entity_value(actor, HELD_ITEM_PROP, "")).strip_edges() != "":
 \t\treturn
 \tvar rank: int = max(int(_entity_value(actor, RANK_PROP, 1)), 1)
 \tvar granted_item := _item_for_rank(rank)
 \t_set_prop(actor, HELD_ITEM_PROP, granted_item)
-\t_set_prop(pickup, PICKUP_ACTIVE_PROP, false)
+\t_set_active_like(pickup, PICKUP_ACTIVE_PROP, false)
 \t_set_prop(pickup, PICKUP_TIMER_PROP, self.""" + respawn_field + """)
 \tprint("[trace] item.collect actor=%s item=%s rank=%d" % [actor.name, granted_item, rank])
 """.strip(),
@@ -1609,19 +1689,19 @@ func process_overlap_event(actor, pickup) -> void:
             '\tfor pickup in pickups:',
             '\t\tif pickup == null:',
             '\t\t\tcontinue',
-            '\t\tif not bool(_entity_value(pickup, PICKUP_ACTIVE_PROP, false)):',
+            '\t\tif not _entity_active(pickup, PICKUP_ACTIVE_PROP):',
             '\t\t\tvar respawn_timer: float = max(float(_entity_value(pickup, PICKUP_TIMER_PROP, 0.0)) - _delta, 0.0)',
             '\t\t\t_set_prop(pickup, PICKUP_TIMER_PROP, respawn_timer)',
             '\t\t\tif respawn_timer <= 0.0:',
-            '\t\t\t\t_set_prop(pickup, PICKUP_ACTIVE_PROP, true)',
+            '\t\t\t\t_set_active_like(pickup, PICKUP_ACTIVE_PROP, true)',
             '\t\t\t\tprint("[trace] item.pickup_respawn pickup=%s" % [pickup.name])',
             '\tfor projectile in _ensure_pool("' + projectile_pool + '"):',
-            '\t\tif projectile == null or not bool(_entity_value(projectile, PROJECTILE_ACTIVE_PROP, false)):',
+            '\t\tif projectile == null or not _entity_active(projectile, PROJECTILE_ACTIVE_PROP):',
             '\t\t\tcontinue',
             '\t\tvar forward: Vector2 = _forward(float(projectile.rotation))',
             '\t\tprojectile.position = projectile.position + forward * self.' + shell_speed_field + ' * max(_delta * 60.0, 1.0)',
             '\t\tif projectile.position.x < -160.0 or projectile.position.x > 2080.0 or projectile.position.y < -160.0 or projectile.position.y > 1240.0:',
-            '\t\t\t_set_prop(projectile, PROJECTILE_ACTIVE_PROP, false)',
+            '\t\t\t_set_active_like(projectile, PROJECTILE_ACTIVE_PROP, false)',
             '\t\t\tprint("[trace] item.projectile_despawn projectile=%s" % [projectile.name])',
             '\tfor actor in actors:',
             '\t\tif actor == null:',
@@ -1630,7 +1710,7 @@ func process_overlap_event(actor, pickup) -> void:
             '\t\t_set_prop(actor, INVULN_PROP, invuln_timer)',
             '\t\tif POSITION_PROP != "":',
             '\t\t\tfor pickup in pickups:',
-            '\t\t\t\tif pickup == null or not bool(_entity_value(pickup, PICKUP_ACTIVE_PROP, false)):',
+            '\t\t\t\tif pickup == null or not _entity_active(pickup, PICKUP_ACTIVE_PROP):',
             '\t\t\t\t\tcontinue',
             '\t\t\t\tif actor.position.distance_to(pickup.position) <= 84.0:',
             '\t\t\t\t\tprocess_overlap_event(actor, pickup)',
@@ -1654,16 +1734,16 @@ func process_overlap_event(actor, pickup) -> void:
             '\tfor pickup in _ensure_pool("' + pickup_pool + '"):',
             '\t\tif pickup == null:',
             '\t\t\tcontinue',
-            '\t\t_set_prop(pickup, PICKUP_ACTIVE_PROP, true)',
+            '\t\t_set_active_like(pickup, PICKUP_ACTIVE_PROP, true)',
             '\t\t_set_prop(pickup, PICKUP_TIMER_PROP, 0.0)',
             '\tfor projectile in _ensure_pool("' + projectile_pool + '"):',
             '\t\tif projectile == null:',
             '\t\t\tcontinue',
-            '\t\t_set_prop(projectile, PROJECTILE_ACTIVE_PROP, false)',
+            '\t\t_set_active_like(projectile, PROJECTILE_ACTIVE_PROP, false)',
             '\tfor trap in _ensure_pool("' + trap_pool + '"):',
             '\t\tif trap == null:',
             '\t\t\tcontinue',
-            '\t\t_set_prop(trap, TRAP_ACTIVE_PROP, false)',
+            '\t\t_set_active_like(trap, TRAP_ACTIVE_PROP, false)',
         ],
     )
 
@@ -1704,6 +1784,24 @@ func _spin_out(kart, source: String) -> void:
 \t\tkart.spin_out_timer = float(self.spin_out_duration) / 60.0
 \t\tprint("[trace] collision.spin_out kart=%s source=%s" % [kart.name, source])
 """.strip(),
+            """
+func _entity_active(obj) -> bool:
+\tif obj == null:
+\t\treturn false
+\tvar raw = obj.get("active")
+\tif raw == null:
+\t\traw = obj.get("is_active")
+\treturn false if raw == null else bool(raw)
+""".strip(),
+            """
+func _set_entity_active(obj, value: bool) -> void:
+\tif obj == null:
+\t\treturn
+\tif obj.get("active") != null:
+\t\tobj.set("active", value)
+\tif obj.get("is_active") != null:
+\t\tobj.set("is_active", value)
+""".strip(),
         ],
         process_body=[
             "\tfor i in range(karts.size()):",
@@ -1731,7 +1829,7 @@ func _spin_out(kart, source: String) -> void:
             "\t\t\tcontinue",
             '\t\tvar kart_radius: float = _radius(kart.get("collision_radius"), 56.0)',
             f'\t\tfor item_box in entity_pools.get("{pickup_pool}", []):',
-            "\t\t\tif item_box == null or not bool(item_box.get(\"active\")):",
+            "\t\t\tif item_box == null or not _entity_active(item_box):",
             "\t\t\t\tcontinue",
             '\t\t\tvar item_distance: float = kart.position.distance_to(item_box.position)',
             "\t\t\tif item_distance <= kart_radius + 44.0:",
@@ -1741,28 +1839,28 @@ func _spin_out(kart, source: String) -> void:
             '\t\t\t\telif sibling_systems.has("item_system") and sibling_systems["item_system"].has_method("process_overlap_event"):',
             '\t\t\t\t\tsibling_systems["item_system"].process_overlap_event(kart, item_box)',
             "\t\t\t\telse:",
-            "\t\t\t\t\titem_box.active = false",
+            "\t\t\t\t\t_set_entity_active(item_box, false)",
             f'\t\tfor peel in entity_pools.get("{trap_pool}", []):',
-            "\t\t\tif peel == null or not bool(peel.get(\"active\")):",
+            "\t\t\tif peel == null or not _entity_active(peel):",
             "\t\t\t\tcontinue",
             '\t\t\tif kart.position.distance_to(peel.position) <= kart_radius + 32.0:',
-            "\t\t\t\tpeel.active = false",
+            "\t\t\t\t_set_entity_active(peel, false)",
             '\t\t\t\tprint("[trace] collision.game_object kart=%s object=%s type=banana" % [kart.name, peel.name])',
             '\t\t\t\t_spin_out(kart, "banana")',
             f'\t\tfor shell in entity_pools.get("{projectile_pool}", []):',
-            "\t\t\tif shell == null or not bool(shell.get(\"active\")):",
+            "\t\t\tif shell == null or not _entity_active(shell):",
             "\t\t\t\tcontinue",
             '\t\t\tif kart.position.distance_to(shell.position) <= kart_radius + max(self.shell_hit_radius, 24.0):',
-            "\t\t\t\tshell.active = false",
+            "\t\t\t\t_set_entity_active(shell, false)",
             "\t\t\t\tshell.velocity = Vector2.ZERO",
             '\t\t\t\tprint("[trace] collision.game_object kart=%s object=%s type=shell" % [kart.name, shell.name])',
             '\t\t\t\t_spin_out(kart, "shell")',
             f'\t\tfor obstacle in entity_pools.get("{generic_object_pool}", []):',
-            "\t\t\tif obstacle == null or not bool(obstacle.get(\"active\")):",
+            "\t\t\tif obstacle == null or not _entity_active(obstacle):",
             "\t\t\t\tcontinue",
             '\t\t\tvar obstacle_radius: float = _radius(obstacle.get("collision_radius"), 64.0)',
             '\t\t\tif kart.position.distance_to(obstacle.position) <= kart_radius + obstacle_radius:',
-            "\t\t\t\tobstacle.active = false",
+            "\t\t\t\t_set_entity_active(obstacle, false)",
             '\t\t\t\tprint("[trace] collision.game_object kart=%s object=%s type=obstacle" % [kart.name, obstacle.name])',
             '\t\t\t\t_spin_out(kart, "obstacle")',
         ],
@@ -1988,6 +2086,37 @@ func _trace_state(actor, target_waypoint: int, steer_value: float, accel_value: 
 \t_last_trace_state[trace_key] = trace_value
 \tprint("[trace] ai_navigation.tick kart=%s waypoint=%d steer=%.2f accel=%s item=%s rubber=%.2f" % [actor.name, target_waypoint, steer_value, str(accel_value), str(item_value), rubber_mult])
 """.strip(),
+            """
+func _starting_waypoint_index(actor, checkpoints: Array[Vector2]) -> int:
+\tif actor == null or checkpoints.is_empty():
+\t\treturn 0
+\tvar actor_pos: Variant = _entity_value(actor, "position", null)
+\tif not (actor_pos is Vector2):
+\t\treturn 0
+\tvar angle_radians: float = _angle_radians(float(_entity_value(actor, ANGLE_PROP, 0.0)))
+\tvar forward: Vector2 = Vector2(cos(angle_radians), sin(angle_radians)).normalized()
+\tif forward.length() <= 0.01:
+\t\tforward = Vector2.RIGHT
+\tvar best_index: int = 0
+\tvar best_score: float = 1e18
+\tvar ahead_found: bool = false
+\tfor idx in range(checkpoints.size()):
+\t\tvar checkpoint: Vector2 = checkpoints[idx]
+\t\tvar delta: Vector2 = checkpoint - (actor_pos as Vector2)
+\t\tvar along: float = delta.dot(forward)
+\t\tvar distance: float = delta.length()
+\t\tvar is_ahead: bool = along >= -self.ai_waypoint_threshold * 0.25
+\t\tvar score: float = distance - max(along, 0.0) * 0.25
+\t\tif is_ahead:
+\t\t\tif (not ahead_found) or score < best_score:
+\t\t\t\tahead_found = true
+\t\t\t\tbest_score = score
+\t\t\t\tbest_index = idx
+\t\telif not ahead_found and distance < best_score:
+\t\t\tbest_score = distance
+\t\t\tbest_index = idx
+\treturn best_index
+""".strip(),
         ],
         process_body=[
             "\tvar player = _player_actor()",
@@ -2025,10 +2154,11 @@ func _trace_state(actor, target_waypoint: int, steer_value: float, accel_value: 
         ],
         round_start_body=[
             "\t_last_trace_state.clear()",
+            "\tvar checkpoints: Array[Vector2] = _checkpoint_points()",
             "\tfor actor in actors:",
             "\t\tif actor == null or not bool(_entity_value(actor, AI_PROP, false)):",
             "\t\t\tcontinue",
-            '\t\t_set_prop(actor, WAYPOINT_PROP, 0)',
+            '\t\t_set_prop(actor, WAYPOINT_PROP, _starting_waypoint_index(actor, checkpoints))',
             '\t\t_set_prop(actor, STEER_PROP, 0.0)',
             '\t\t_set_prop(actor, ACCEL_PROP, 0.0)',
             '\t\t_set_prop(actor, ITEM_PROP, false)',
